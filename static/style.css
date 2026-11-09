@@ -509,3 +509,13 @@ ul.adjuntos .ico { text-decoration: none; }
 
 /* Duplicar */
 .aviso-dup { background: var(--info-suave); color: var(--texto); border-radius: 10px; padding: 9px 12px; font-size: .84rem; margin: -6px 0 14px; }
+
+/* Cronómetro por subtarea */
+.crono-sub { border: 1px solid var(--borde); background: var(--superficie); border-radius: 7px; width: 28px; height: 26px; cursor: pointer; font-size: .78rem; flex: none; color: var(--acento); }
+.crono-sub:hover { border-color: var(--acento); background: var(--acento-suave); }
+.crono-sub.en-curso { background: var(--acento); color: #fff; border-color: var(--acento); }
+.tiempo-sub { font-size: .72rem; color: var(--sutil); white-space: nowrap; }
+.subtareas li.corriendo { background: var(--acento-suave); box-shadow: inset 3px 0 0 var(--acento); }
+.subtareas li.corriendo .tiempo-sub { color: var(--acento); font-weight: 700; }
+.desglose-sub { flex-basis: 100%; padding-left: 27px; }
+.subtareas li.hecha span.tiempo-sub { text-decoration: none; }

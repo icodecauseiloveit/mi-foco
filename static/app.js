@@ -104,7 +104,8 @@ function ordenPrioridad(a, b) {
 async function cargarTareas() {
   st.tareas = await api('/api/tareas?incluir_cerradas=1');
   const t = st.tareas.find((x) => x.sesion_abierta);
-  st.activa = t ? { id: t.id, titulo: t.titulo, base: t.minutos_sesion_actual, desde: Date.now() } : null;
+  st.activa = t ? { id: t.id, titulo: t.subtarea_en_curso ? `${t.titulo} › ${t.subtarea_en_curso.titulo}` : t.titulo,
+    base: t.minutos_sesion_actual, desde: Date.now() } : null;
   pintarEnCurso();
 }
 async function cargarMetas() { st.metas = await api('/api/metas'); }
@@ -212,13 +213,21 @@ function etiquetaLimite(t) {
   return `<span class="chip">📅 ${fmtFecha(t.fecha_limite)}</span>`;
 }
 
+const recorte = (txt, n) => (txt.length > n ? txt.slice(0, n - 1) + '…' : txt);
+/** Subtarea corriendo o, si no hay, la primera pendiente. */
+const siguienteSubtarea = (t) => (t.subtareas || []).find((s) => s.sesion_abierta) || (t.subtareas || []).find((s) => !s.completada);
+
 /* Subtareas: abiertas por defecto en tareas abiertas, cerradas en las terminadas. */
 const subExpandida = (t) => (abierta(t) ? !st.subInvertidas.has(t.id) : st.subInvertidas.has(t.id));
 
 function checklistSubtareas(t, conAgregar = true) {
-  return `<ul class="subtareas">${t.subtareas.map((s) => `<li class="${s.completada ? 'hecha' : ''} ${s.es_entregable ? 'entregable' : ''}">
+  return `<ul class="subtareas">${t.subtareas.map((s) => `<li class="${s.completada ? 'hecha' : ''} ${s.es_entregable ? 'entregable' : ''} ${s.sesion_abierta ? 'corriendo' : ''}">
       <label><input type="checkbox" data-subtarea="${s.id}" data-tarea="${t.id}" ${s.completada ? 'checked' : ''} ${t.estado === 'cancelada' ? 'disabled' : ''}>
       <span>${s.es_entregable ? '<em class="tag-entregable">📦 Entregable</em> ' : ''}${esc(s.titulo)}</span></label>
+      ${s.tiempo_min > 0 || s.sesion_abierta ? `<span class="tiempo-sub" title="Tiempo trabajado en esta subtarea">⏱ ${fmtMin(s.tiempo_min)}</span>` : ''}
+      ${!s.completada && abierta(t) ? (s.sesion_abierta
+        ? `<button type="button" class="crono-sub en-curso" data-sub-accion="pausar" data-sub="${s.id}" data-tarea="${t.id}" title="Pausar">⏸</button>`
+        : `<button type="button" class="crono-sub" data-sub-accion="iniciar" data-sub="${s.id}" data-tarea="${t.id}" title="Iniciar el tiempo en esta subtarea">▶</button>`) : ''}
       ${s.completada && s.completada_en ? `<button type="button" class="fecha-sub" data-fecha-subtarea="${s.id}" data-tarea="${t.id}" title="Cambiar la fecha en que se completó">✅ ${fmtFecha(s.completada_en)} <span class="lapiz">✎</span></button>` : ''}</li>`).join('')}</ul>
     ${conAgregar && abierta(t) ? `<form class="f-subtarea" data-tarea="${t.id}"><input name="titulo" placeholder="+ Agregar subtarea y Enter" autocomplete="off"></form>` : ''}`;
 }
@@ -298,8 +307,13 @@ function requisitoDesdeValor(valor) {
 function tarjetaTarea(t, { compacta = false } = {}) {
   const expandida = compacta ? st.subHoy.has(t.id) : subExpandida(t);
   const acc = [];
-  if (['pendiente', 'pausada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="iniciar" data-id="${t.id}">▶ ${t.estado === 'pausada' ? 'Reanudar' : 'Iniciar'}</button>`);
-  if (t.estado === 'en_progreso') acc.push(`<button class="mini" data-accion="pausar" data-id="${t.id}">⏸ Pausar</button>`);
+  const sigSub = siguienteSubtarea(t);
+  if (t.tiempo_por_subtareas && abierta(t)) {
+    // El cronómetro se maneja desde las subtareas: acceso rápido a la que está corriendo o a la siguiente pendiente.
+    if (t.subtarea_en_curso) acc.push(`<button class="mini" data-sub-accion="pausar" data-sub="${t.subtarea_en_curso.id}" data-tarea="${t.id}" title="Pausar la subtarea en curso">⏸ ${esc(recorte(t.subtarea_en_curso.titulo, 18))}</button>`);
+    else if (sigSub) acc.push(`<button class="mini" data-sub-accion="iniciar" data-sub="${sigSub.id}" data-tarea="${t.id}" title="Iniciar el tiempo en la subtarea «${esc(sigSub.titulo)}»">▶ ${esc(recorte(sigSub.titulo, 18))}</button>`);
+  } else if (['pendiente', 'pausada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="iniciar" data-id="${t.id}">▶ ${t.estado === 'pausada' ? 'Reanudar' : 'Iniciar'}</button>`);
+  if (t.estado === 'en_progreso' && !t.subtarea_en_curso) acc.push(`<button class="mini" data-accion="pausar" data-id="${t.id}">⏸ Pausar</button>`);
   if (abierta(t)) acc.push(`<button class="mini ok" data-accion="completar" data-id="${t.id}">✓ Completar</button>`);
   if (['completada', 'cancelada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="reabrir" data-id="${t.id}">↺ Reabrir</button>`);
 
@@ -311,6 +325,7 @@ function tarjetaTarea(t, { compacta = false } = {}) {
   }
   if (t.meta_nombre) chips.push(`<span class="chip azul">◆ ${esc(t.meta_nombre)}</span>`);
   chips.push(etiquetaLimite(t));
+  if (t.subtarea_en_curso) chips.push(`<span class="chip azul" title="Subtarea con el cronómetro en marcha">▶ en «${esc(recorte(t.subtarea_en_curso.titulo, 28))}»</span>`);
   if (t.entregable && t.estado !== 'completada') {
     chips.push(`<span class="chip ${t.entregable_listo ? 'verde' : ''}" title="Entregable: ${esc(t.entregable)}">📦 ${t.entregable_listo ? 'Entregable listo' : 'Entregable pendiente'}</span>`);
   }
@@ -392,7 +407,9 @@ async function vistaHoy() {
         <b>${rana.bloqueada ? '🔒 ' : ''}${esc(rana.titulo)}</b>${etiquetaLimite(rana)}${chipsDependencia(rana)}${barraAvance(rana, false)}</div>
       ${rana.estado === 'en_progreso'
         ? `<button class="exito" data-accion="completar" data-id="${rana.id}">✓ Terminé</button>`
-        : `<button class="primario" data-accion="iniciar" data-id="${rana.id}">Comer la rana ▶</button>`}
+        : rana.tiempo_por_subtareas && siguienteSubtarea(rana)
+          ? `<button class="primario" data-sub-accion="iniciar" data-sub="${siguienteSubtarea(rana).id}" data-tarea="${rana.id}" title="Empieza por «${esc(siguienteSubtarea(rana).titulo)}»">Comer la rana ▶</button>`
+          : `<button class="primario" data-accion="iniciar" data-id="${rana.id}">Comer la rana ▶</button>`}
     </div>`
     : `<div class="tarjeta rana"><div class="emoji">🐸</div><div class="cuerpo"><b>No tienes una “rana” definida</b>
       <span class="sutil">Marca como rana la tarea más importante y difícil del día y hazla primero.</span></div></div>`;
@@ -646,7 +663,8 @@ function tarjetaDia(d) {
       <small>${esc(t.hora)}${t.entregable ? ` · 📦 ${esc(t.entregable)}` : ''}</small></li>`)),
     seccion('☑ Subtareas completadas', d.subtareas.map((s) => `<li>${s.es_entregable ? '📦 ' : ''}${esc(s.titulo)}
       <small>de ${enlaceTarea(s.tarea)} · ${esc(s.hora)}</small></li>`)),
-    seccion('⏱ Tiempo trabajado', d.trabajadas.map((t) => `<li>${enlaceTarea(t)} <span class="chip">${fmtMin(t.minutos)}</span></li>`)),
+    seccion('⏱ Tiempo trabajado', d.trabajadas.map((t) => `<li>${enlaceTarea(t)} <span class="chip">${fmtMin(t.minutos)}</span>
+      ${t.por_subtarea && t.por_subtarea.length ? `<small class="desglose-sub">${t.por_subtarea.map((x) => `${esc(x.titulo)} ${fmtMin(x.minutos)}`).join(' · ')}</small>` : ''}</li>`)),
     seccion('💬 Comentarios', d.comentarios.map((c) => `<li><span class="coment-dia">${esc(c.texto)}</span>
       <small>en ${enlaceTarea(c.tarea)} · ${esc(c.hora)}</small></li>`)),
     seccion('📚 Aprendizaje', d.practica.map((p) => `<li>${esc(p.meta)} <span class="chip">${fmtMin(p.minutos)}</span>${p.nota ? ` <small>${esc(p.nota)}</small>` : ''}</li>`)),
@@ -1029,6 +1047,16 @@ async function verDetalle(id, ir = false) {
 }
 
 /* ─────────── acciones ─────────── */
+async function accionSubtarea(sid, tid, accion) {
+  try {
+    const t = await api(`/api/subtareas/${sid}/accion`, { method: 'POST', body: { accion } });
+    const sub = t.subtareas.find((x) => x.id === sid);
+    toast(accion === 'iniciar' ? `▶ En marcha: «${sub.titulo}»` : `⏸ Pausada «${sub.titulo}» · lleva ${fmtMin(sub.tiempo_min)} · tarea ${fmtMin(t.tiempo_real_min)}`);
+    if (!$('#modal').classList.contains('oculto') && $('#modal-caja').dataset.detalleAbierto === String(tid)) await verDetalle(tid);
+    await refrescar();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 async function accionTarea(id, accion) {
   const t = st.tareas.find((x) => x.id === id);
   const cuerpo = { accion };
@@ -1229,6 +1257,7 @@ document.addEventListener('click', async (e) => {
     }
     if (d.borrarHito) { await api(`/api/hitos/${d.borrarHito}`, { method: 'DELETE' }); return render(); }
     if (d.tabCatalogo) return gestionarCatalogos(d.tabCatalogo);
+    if (d.subAccion) return accionSubtarea(Number(d.sub), Number(d.tarea), d.subAccion);
     if (d.duplicar) {
       const pre = await api(`/api/tareas/${d.duplicar}/duplicado`);
       return formTarea({ ...pre, _duplicado: pre });

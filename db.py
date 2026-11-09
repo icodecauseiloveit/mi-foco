@@ -215,6 +215,7 @@ def init_db():
         })
         _agregar_columnas(conn, "subtareas", {"es_entregable": "INTEGER DEFAULT 0"})
         _agregar_columnas(conn, "tareas", {"duplicada_de": "INTEGER"})  # id de la tarea original
+        _agregar_columnas(conn, "sesiones", {"subtarea_id": "INTEGER"})  # sesión cronometrada en una subtarea
         # Primera vez con catálogos: se cargan con lo que ya existe en las tareas.
         if conn.execute("SELECT COUNT(*) FROM categorias").fetchone()[0] == 0:
             conn.execute(

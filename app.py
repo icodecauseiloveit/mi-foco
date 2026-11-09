@@ -155,13 +155,32 @@ def tiempos_por_tarea(conn):
     return totales, abiertas
 
 
+def tiempos_por_subtarea(conn, tid=None):
+    """Minutos trabajados por subtarea y cuál tiene la sesión abierta."""
+    ahora = datetime.now()
+    q = "SELECT subtarea_id, inicio, fin, minutos FROM sesiones WHERE subtarea_id IS NOT NULL"
+    totales, abiertas = {}, {}
+    for s in conn.execute(q + (" AND tarea_id=?" if tid else ""), (tid,) if tid else ()):
+        if s["fin"]:
+            m = s["minutos"] or 0
+        else:
+            m = max(0.0, (ahora - parse_dt(s["inicio"])).total_seconds() / 60)
+            abiertas[s["subtarea_id"]] = m
+        totales[s["subtarea_id"]] = totales.get(s["subtarea_id"], 0) + m
+    return totales, abiertas
+
+
 def subtareas_por_tarea(conn, tid=None):
     q = "SELECT * FROM subtareas" + (" WHERE tarea_id=?" if tid else "") + " ORDER BY orden, id"
+    tiempos, abiertas = tiempos_por_subtarea(conn, tid)
     res = {}
     for s in conn.execute(q, (tid,) if tid else ()):
         d = dict(s)
         d["completada"] = bool(d["completada"])
         d["es_entregable"] = bool(d.get("es_entregable"))
+        d["tiempo_min"] = round(tiempos.get(d["id"], 0), 1)
+        d["sesion_abierta"] = d["id"] in abiertas
+        d["minutos_sesion_actual"] = round(abiertas.get(d["id"], 0), 1)
         res.setdefault(d["tarea_id"], []).append(d)
     return res
 
@@ -329,6 +348,9 @@ def serializar(row, totales, abiertas, subs=None, deps=None, coment=None, adj=No
     lista = (subs or {}).get(t["id"], [])
     hechas = sum(1 for s in lista if s["completada"])
     t["subtareas"] = lista
+    corriendo = next((x for x in lista if x.get("sesion_abierta")), None)
+    t["subtarea_en_curso"] = {"id": corriendo["id"], "titulo": corriendo["titulo"]} if corriendo else None
+    t["tiempo_por_subtareas"] = any(not x["completada"] for x in lista)  # el tiempo se inicia desde las subtareas
     ent = next((x for x in lista if x["es_entregable"]), None)
     t["entregable"] = ent["titulo"] if ent else None
     t["entregable_listo"] = bool(ent and ent["completada"]) if ent else None
@@ -475,6 +497,16 @@ def marcar_vencidas(conn):
             if cur.rowcount == 1:
                 registrar_evento(conn, r["id"], "vencida", r["estado"], r["estado"],
                                  f"Superó su fecha límite ({r['fecha_limite'].replace('T', ' ')})")
+
+
+def pausar_lo_que_corre(conn, ahora, motivo, excepto_tarea=None):
+    """Una cosa a la vez: cierra toda sesión abierta y pausa las tareas en curso (salvo `excepto_tarea`)."""
+    for o in conn.execute("SELECT id FROM tareas WHERE estado='en_progreso' AND eliminada=0").fetchall():
+        if o["id"] == excepto_tarea:
+            continue
+        mins = cerrar_sesion(conn, o["id"], ahora)
+        conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, o["id"]))
+        registrar_evento(conn, o["id"], "pausada", "en_progreso", "pausada", f"Pausa automática {motivo} · sesión de {mins:.0f} min")
 
 
 def cerrar_sesion(conn, tid, momento):
@@ -772,13 +804,10 @@ def api_accion_tarea(tid):
         if accion == "iniciar":
             if est not in ("pendiente", "pausada"):
                 raise ValueError("Solo se puede iniciar una tarea pendiente o pausada.")
+            if conn.execute("SELECT 1 FROM subtareas WHERE tarea_id=? AND completada=0", (tid,)).fetchone():
+                raise ValueError("Esta tarea tiene subtareas: inicia el tiempo con ▶ en la subtarea en la que vas a trabajar.")
             # Una tarea a la vez: se pausa cualquier otra en curso.
-            for o in conn.execute("SELECT id FROM tareas WHERE estado='en_progreso' AND id<>? AND eliminada=0",
-                                  (tid,)).fetchall():
-                mins = cerrar_sesion(conn, o["id"], ahora)
-                conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, o["id"]))
-                registrar_evento(conn, o["id"], "pausada", "en_progreso", "pausada",
-                                 f"Pausa automática al iniciar otra tarea · sesión de {mins:.0f} min")
+            pausar_lo_que_corre(conn, ahora, "al iniciar otra tarea", excepto_tarea=tid)
             tipo = "reanudada" if t["iniciada_en"] else "iniciada"
             conn.execute("UPDATE tareas SET estado='en_progreso', iniciada_en=COALESCE(iniciada_en, ?), "
                          "actualizada_en=? WHERE id=?", (ahora, ahora, tid))
@@ -788,9 +817,12 @@ def api_accion_tarea(tid):
         elif accion == "pausar":
             if est != "en_progreso":
                 raise ValueError("La tarea no está en progreso.")
+            sub = conn.execute("SELECT st.titulo FROM sesiones s JOIN subtareas st ON st.id=s.subtarea_id "
+                               "WHERE s.tarea_id=? AND s.fin IS NULL", (tid,)).fetchone()
             mins = cerrar_sesion(conn, tid, ahora)
             conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, tid))
-            registrar_evento(conn, tid, "pausada", est, "pausada", f"Sesión de {mins:.0f} min")
+            registrar_evento(conn, tid, "pausada", est, "pausada",
+                             (f"Subtarea «{sub['titulo']}» · " if sub else "") + f"sesión de {mins:.0f} min")
 
         elif accion == "completar":
             if est not in ABIERTOS:
@@ -1032,6 +1064,12 @@ def api_editar_subtarea(sid):
             conn.execute("UPDATE subtareas SET titulo=? WHERE id=?", (d["titulo"].strip()[:200], sid))
         if "completada" in d and bool(d["completada"]) != bool(s["completada"]):
             hecha = bool(d["completada"])
+            if hecha:
+                mins = cerrar_sesion_subtarea(conn, sid, ahora)
+                if mins and not conn.execute("SELECT 1 FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchone():
+                    conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=? AND estado='en_progreso'", (ahora, tid))
+                    registrar_evento(conn, tid, "pausada", "en_progreso", "pausada",
+                                     f"Subtarea «{s['titulo']}» completada · sesión de {mins:.0f} min")
             conn.execute("UPDATE subtareas SET completada=?, completada_en=? WHERE id=?",
                          (int(hecha), ahora if hecha else None, sid))
             if hecha:  # avanzar en una subtarea cuenta como haber empezado la tarea
@@ -1057,6 +1095,56 @@ def api_editar_subtarea(sid):
         res["desbloqueadas"] = registrar_cambios_bloqueo(
             conn, antes, f"{'se completó' if d.get('completada') else 'se desmarcó'} la subtarea «{s['titulo']}»")
         return jsonify(res)
+
+
+def cerrar_sesion_subtarea(conn, sid, momento):
+    total, fin = 0.0, parse_dt(momento)
+    for s in conn.execute("SELECT id, inicio FROM sesiones WHERE subtarea_id=? AND fin IS NULL", (sid,)).fetchall():
+        m = max(0.0, (fin - parse_dt(s["inicio"])).total_seconds() / 60)
+        conn.execute("UPDATE sesiones SET fin=?, minutos=? WHERE id=?", (momento, round(m, 2), s["id"]))
+        total += m
+    return total
+
+
+@app.post("/api/subtareas/<int:sid>/accion")
+def api_accion_subtarea(sid):
+    """Cronómetro a nivel de subtarea: {"accion": "iniciar" | "pausar"}. El tiempo se totaliza en la tarea."""
+    accion = body().get("accion")
+    ahora = db.ahora()
+    with db.conexion() as conn:
+        s = fila_subtarea(conn, sid)
+        tid = s["tarea_id"]
+        t = fila_tarea(conn, tid)
+        if accion == "iniciar":
+            if s["completada"]:
+                raise ValueError("La subtarea ya está completada.")
+            if t["estado"] not in ABIERTOS:
+                raise ValueError("La tarea está cerrada: reábrela para seguir trabajando en ella.")
+            if s["id"] in tiempos_por_subtarea(conn, tid)[1]:
+                return jsonify(obtener_tarea(conn, tid))  # ya estaba corriendo
+            # Una cosa a la vez: se pausa cualquier otra tarea y cualquier otra subtarea de esta tarea.
+            pausar_lo_que_corre(conn, ahora, f"al iniciar «{s['titulo']}»", excepto_tarea=tid)
+            previo = conn.execute("SELECT s.subtarea_id, st.titulo FROM sesiones s LEFT JOIN subtareas st ON st.id=s.subtarea_id "
+                                  "WHERE s.tarea_id=? AND s.fin IS NULL", (tid,)).fetchone()
+            mins_prev = cerrar_sesion(conn, tid, ahora)
+            tipo = "reanudada" if t["iniciada_en"] else "iniciada"
+            conn.execute("UPDATE tareas SET estado='en_progreso', iniciada_en=COALESCE(iniciada_en, ?), "
+                         "actualizada_en=? WHERE id=?", (ahora, ahora, tid))
+            conn.execute("INSERT INTO sesiones (tarea_id, subtarea_id, inicio) VALUES (?,?,?)", (tid, sid, ahora))
+            detalle = f"En la subtarea «{s['titulo']}»"
+            if previo and previo["titulo"]:
+                detalle += f" · antes «{previo['titulo']}» ({mins_prev:.0f} min)"
+            registrar_evento(conn, tid, tipo if t["estado"] != "en_progreso" else "iniciada", t["estado"], "en_progreso", detalle)
+        elif accion == "pausar":
+            mins = cerrar_sesion_subtarea(conn, sid, ahora)
+            if not mins and s["id"] not in tiempos_por_subtarea(conn, tid)[1]:
+                raise ValueError("La subtarea no está en curso.")
+            if not conn.execute("SELECT 1 FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchone():
+                conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, tid))
+            registrar_evento(conn, tid, "pausada", "en_progreso", "pausada", f"Subtarea «{s['titulo']}» · sesión de {mins:.0f} min")
+        else:
+            raise ValueError("Acción no válida.")
+        return jsonify(obtener_tarea(conn, tid))
 
 
 @app.delete("/api/subtareas/<int:sid>")
@@ -1692,7 +1780,8 @@ def api_semana():
             "FROM subtareas s JOIN tareas t ON t.id=s.tarea_id "
             "WHERE t.eliminada=0 AND s.completada=1 AND s.completada_en >= ? AND s.completada_en < ?", rango).fetchall()
         sesiones = conn.execute(
-            "SELECT s.tarea_id, s.inicio, s.fin, s.minutos FROM sesiones s JOIN tareas t ON t.id=s.tarea_id "
+            "SELECT s.tarea_id, s.inicio, s.fin, s.minutos, st.titulo AS sub_titulo FROM sesiones s "
+            "JOIN tareas t ON t.id=s.tarea_id LEFT JOIN subtareas st ON st.id=s.subtarea_id "
             "WHERE t.eliminada=0 AND s.inicio >= ? AND s.inicio < ?", rango).fetchall()
         comentarios = conn.execute(
             "SELECT c.tarea_id, c.texto, c.creado_en FROM comentarios c JOIN tareas t ON t.id=c.tarea_id "
@@ -1725,7 +1814,10 @@ def api_semana():
         t = tareas.get(s["tarea_id"])
         if t:
             dia = por_dia[ini.date().isoformat()]["trabajadas"]
-            dia.setdefault(t["id"], {**breve(t), "minutos": 0})["minutos"] += m
+            fila = dia.setdefault(t["id"], {**breve(t), "minutos": 0, "por_subtarea": {}})
+            fila["minutos"] += m
+            if s["sub_titulo"]:
+                fila["por_subtarea"][s["sub_titulo"]] = fila["por_subtarea"].get(s["sub_titulo"], 0) + m
     for c in comentarios:
         t = tareas.get(c["tarea_id"])
         if t:
@@ -1738,8 +1830,10 @@ def api_semana():
     for i, d in enumerate(dias):
         k = d.isoformat()
         x = por_dia[k]
-        trabajadas = sorted(({**v, "minutos": round(v["minutos"])} for v in x["trabajadas"].values()),
-                            key=lambda v: -v["minutos"])
+        trabajadas = sorted(({**v, "minutos": round(v["minutos"]),
+                              "por_subtarea": [{"titulo": k2, "minutos": round(v2)} for k2, v2 in
+                                               sorted(v["por_subtarea"].items(), key=lambda kv: -kv[1])]}
+                             for v in x["trabajadas"].values()), key=lambda v: -v["minutos"])
         minutos_foco = sum(v["minutos"] for v in trabajadas)
         minutos_practica = sum(p["minutos"] for p in x["practica"])
         festivo = fest.get(k)
