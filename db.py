@@ -8,6 +8,7 @@ from datetime import datetime
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("MIFOCO_DB", os.path.join(BASE_DIR, "data", "mifoco.db"))
 RESPALDOS_DIR = os.path.join(os.path.dirname(DB_PATH), "respaldos")
+ADJUNTOS_DIR = os.path.join(os.path.dirname(DB_PATH), "adjuntos")
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -125,6 +126,20 @@ CREATE TABLE IF NOT EXISTS comentarios (
     editado_en  TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_comentarios_tarea ON comentarios(tarea_id);
+
+-- Soporte de la tarea: archivos (guardados en data/adjuntos) o enlaces.
+CREATE TABLE IF NOT EXISTS adjuntos (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tarea_id    INTEGER NOT NULL REFERENCES tareas(id) ON DELETE CASCADE,
+    tipo        TEXT NOT NULL CHECK (tipo IN ('archivo','enlace')),
+    nombre      TEXT NOT NULL,      -- nombre original del archivo o título del enlace
+    url         TEXT,               -- solo enlaces
+    archivo     TEXT,               -- nombre interno en disco (solo archivos)
+    tamano      INTEGER,
+    mime        TEXT,
+    creado_en   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_adjuntos_tarea ON adjuntos(tarea_id);
 
 -- Catálogos reutilizables al crear tareas.
 CREATE TABLE IF NOT EXISTS categorias (

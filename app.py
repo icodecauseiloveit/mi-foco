@@ -9,13 +9,15 @@ import binascii
 import csv
 import io
 import os
+import mimetypes
 import re
 import sqlite3
+import uuid
 import threading
 import webbrowser
 from datetime import date, datetime, timedelta
 
-from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 import db
@@ -26,6 +28,8 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 app.json.ensure_ascii = False
+MAX_ADJUNTO_MB = 50
+app.config["MAX_CONTENT_LENGTH"] = MAX_ADJUNTO_MB * 1024 * 1024
 
 ABIERTOS = ("pendiente", "en_progreso", "pausada")
 PRIORIDADES = "ABCDE"
@@ -73,6 +77,11 @@ def _err_valor(e):
 @app.errorhandler(sqlite3.IntegrityError)
 def _err_integridad(e):
     return jsonify(error=f"Dato inválido: {e}"), 400
+
+
+@app.errorhandler(413)
+def _err_muy_grande(e):
+    return jsonify(error=f"El archivo supera el máximo de {MAX_ADJUNTO_MB} MB."), 413
 
 
 @app.errorhandler(HTTPException)
@@ -302,9 +311,15 @@ def conteo_comentarios(conn, tid=None):
     return {r["tarea_id"]: (r["n"], r["ultimo"]) for r in conn.execute(q, (tid,) if tid else ())}
 
 
-def serializar(row, totales, abiertas, subs=None, deps=None, coment=None):
+def conteo_adjuntos(conn, tid=None):
+    q = "SELECT tarea_id, COUNT(*) AS n FROM adjuntos" + (" WHERE tarea_id=?" if tid else "") + " GROUP BY tarea_id"
+    return {r["tarea_id"]: r["n"] for r in conn.execute(q, (tid,) if tid else ())}
+
+
+def serializar(row, totales, abiertas, subs=None, deps=None, coment=None, adj=None):
     t = dict(row)
     t["comentarios_total"], t["ultimo_comentario"] = (coment or {}).get(t["id"], (0, None))
+    t["adjuntos_total"] = (adj or {}).get(t["id"], 0)
     ahora = datetime.now()
     requisitos, frena = deps or ({}, {})
     t["dependencias"] = requisitos.get(t["id"], [])
@@ -359,8 +374,8 @@ def listar_tareas(conn, incluir_cerradas=False):
     totales, abiertas = tiempos_por_tarea(conn)
     subs = subtareas_por_tarea(conn)
     deps = info_dependencias(conn)
-    coment = conteo_comentarios(conn)
-    return [serializar(r, totales, abiertas, subs, deps, coment) for r in conn.execute(q + " ORDER BY t.id DESC")]
+    coment, adj = conteo_comentarios(conn), conteo_adjuntos(conn)
+    return [serializar(r, totales, abiertas, subs, deps, coment, adj) for r in conn.execute(q + " ORDER BY t.id DESC")]
 
 
 def fila_tarea(conn, tid):
@@ -376,7 +391,7 @@ def obtener_tarea(conn, tid):
         abort(404, "Tarea no encontrada.")
     totales, abiertas = tiempos_por_tarea(conn)
     return serializar(r, totales, abiertas, subtareas_por_tarea(conn, tid), info_dependencias(conn),
-                      conteo_comentarios(conn, tid))
+                      conteo_comentarios(conn, tid), conteo_adjuntos(conn, tid))
 
 
 def limpiar_subtareas(valor):
@@ -581,6 +596,8 @@ def api_detalle_tarea(tid):
             "SELECT * FROM sesiones WHERE tarea_id=? ORDER BY inicio", (tid,))]
         t["comentarios"] = [dict(c) for c in conn.execute(
             "SELECT * FROM comentarios WHERE tarea_id=? ORDER BY creado_en, id", (tid,))]
+        t["adjuntos"] = [adjunto_dict(a) for a in conn.execute(
+            "SELECT * FROM adjuntos WHERE tarea_id=? ORDER BY creado_en, id", (tid,))]
         return jsonify(t)
 
 
@@ -767,6 +784,115 @@ def api_accion_tarea(tid):
         res = obtener_tarea(conn, tid)
         res["desbloqueadas"] = registrar_cambios_bloqueo(conn, antes, f"{verbo} «{t['titulo']}»")
         return jsonify(res)
+
+
+# ───────────────────────── soporte: archivos y enlaces ─────────────────────────
+# Tipos que el navegador puede mostrar sin riesgo; el resto (HTML, SVG, etc.) siempre se descarga.
+VISIBLES_EN_NAVEGADOR = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "text/plain"}
+
+
+def fmt_tamano(n):
+    if n is None:
+        return ""
+    for unidad in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unidad == "GB":
+            return (f"{n:.0f} {unidad}" if unidad == "B" else f"{n:.1f} {unidad}").replace(".", ",")
+        n /= 1024
+
+
+def adjunto_dict(a):
+    d = dict(a)
+    d.pop("archivo", None)  # el nombre interno en disco no se expone
+    if d["tipo"] == "archivo":
+        d["url"] = f"/api/adjuntos/{d['id']}/archivo"
+        d["tamano_texto"] = fmt_tamano(d["tamano"])
+        d["visible"] = d["mime"] in VISIBLES_EN_NAVEGADOR
+    return d
+
+
+def normalizar_enlace(url):
+    url = (url or "").strip().replace(" ", "%20")  # enlaces de SharePoint copiados con espacios
+    if not url:
+        raise ValueError("Escribe el enlace.")
+    esquema = re.match(r"^([a-z][a-z0-9+.-]*):(?!\d)", url, re.I)  # «javascript:», «file:», «mailto:»…
+    if esquema and esquema.group(1).lower() not in ("http", "https"):
+        raise ValueError("Solo se admiten enlaces web (http o https).")
+    if not esquema:
+        url = "https://" + url  # «sharepoint.com/...» → https://sharepoint.com/...
+    if not re.match(r"^https?://[^\s/$.?#][^\s]*$", url, re.I):
+        raise ValueError("El enlace debe empezar por http:// o https://")
+    return url[:2000]
+
+
+@app.post("/api/tareas/<int:tid>/adjuntos")
+def api_crear_adjunto(tid):
+    ahora = db.ahora()
+    with db.conexion() as conn:
+        fila_tarea(conn, tid)
+        archivos = request.files.getlist("archivo")
+        creados = []
+        if archivos and any(f.filename for f in archivos):
+            os.makedirs(db.ADJUNTOS_DIR, exist_ok=True)
+            for f in archivos:
+                if not f.filename:
+                    continue
+                nombre = os.path.basename(f.filename.replace("\\", "/"))[:200] or "archivo"
+                ext = os.path.splitext(nombre)[1].lower()[:12]
+                interno = f"{tid}_{uuid.uuid4().hex}{ext}"
+                ruta = os.path.join(db.ADJUNTOS_DIR, interno)
+                f.save(ruta)
+                tamano = os.path.getsize(ruta)
+                mime = f.mimetype if f.mimetype and f.mimetype != "application/octet-stream" else (
+                    mimetypes.guess_type(nombre)[0] or "application/octet-stream")
+                cur = conn.execute("INSERT INTO adjuntos (tarea_id, tipo, nombre, archivo, tamano, mime, creado_en) "
+                                   "VALUES (?,?,?,?,?,?,?)", (tid, "archivo", nombre, interno, tamano, mime, ahora))
+                creados.append(cur.lastrowid)
+                registrar_evento(conn, tid, "adjunto", None, None, f"Adjuntó «{nombre}» ({fmt_tamano(tamano)})")
+        else:
+            d = request.get_json(silent=True) or request.form.to_dict()
+            url = normalizar_enlace(d.get("url"))
+            nombre = (d.get("nombre") or "").strip()[:200] or re.sub(r"^https?://(www\.)?", "", url)[:80]
+            cur = conn.execute("INSERT INTO adjuntos (tarea_id, tipo, nombre, url, creado_en) VALUES (?,?,?,?,?)",
+                               (tid, "enlace", nombre, url, ahora))
+            creados.append(cur.lastrowid)
+            registrar_evento(conn, tid, "adjunto", None, None, f"Agregó el enlace «{nombre}»")
+        if not creados:
+            raise ValueError("Elige un archivo o escribe un enlace.")
+        filas = conn.execute(f"SELECT * FROM adjuntos WHERE id IN ({','.join('?' * len(creados))})", creados).fetchall()
+        return jsonify([adjunto_dict(a) for a in filas]), 201
+
+
+@app.get("/api/adjuntos/<int:aid>/archivo")
+def api_ver_adjunto(aid):
+    with db.conexion() as conn:
+        a = conn.execute("SELECT * FROM adjuntos WHERE id=? AND tipo='archivo'", (aid,)).fetchone()
+    if not a:
+        abort(404, "Archivo no encontrado.")
+    ruta = os.path.join(db.ADJUNTOS_DIR, a["archivo"])
+    if not os.path.isfile(ruta):
+        abort(404, "El archivo ya no está en la carpeta de adjuntos.")
+    ver = request.args.get("descargar") != "1" and a["mime"] in VISIBLES_EN_NAVEGADOR
+    resp = send_file(ruta, mimetype=a["mime"] if ver else "application/octet-stream",
+                     as_attachment=not ver, download_name=a["nombre"], max_age=0)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@app.delete("/api/adjuntos/<int:aid>")
+def api_eliminar_adjunto(aid):
+    with db.conexion() as conn:
+        a = conn.execute("SELECT * FROM adjuntos WHERE id=?", (aid,)).fetchone()
+        if not a:
+            abort(404, "Adjunto no encontrado.")
+        conn.execute("DELETE FROM adjuntos WHERE id=?", (aid,))
+        registrar_evento(conn, a["tarea_id"], "adjunto", None, None,
+                         f"Quitó {'el archivo' if a['tipo'] == 'archivo' else 'el enlace'} «{a['nombre']}»")
+    if a["archivo"]:
+        try:
+            os.remove(os.path.join(db.ADJUNTOS_DIR, a["archivo"]))
+        except OSError:
+            pass
+    return jsonify(ok=True)
 
 
 # ───────────────────────── comentarios ─────────────────────────

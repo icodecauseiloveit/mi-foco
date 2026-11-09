@@ -16,7 +16,7 @@ const PRIORIDADES = {
 const EVENTOS = {
   creada: 'Creada', editada: 'Editada', reprogramada: 'Reprogramada', iniciada: 'Iniciada', reanudada: 'Reanudada',
   pausada: 'Pausada', completada: 'Completada', reabierta: 'Reabierta', cancelada: 'Cancelada', vencida: 'Venció', eliminada: 'Eliminada',
-  dependencias: 'Dependencias', desbloqueada: 'Desbloqueada 🔓', bloqueada: 'Bloqueada 🔒',
+  adjunto: 'Soporte 📎', dependencias: 'Dependencias', desbloqueada: 'Desbloqueada 🔓', bloqueada: 'Bloqueada 🔒',
   subtarea_completada: 'Subtarea completada', subtarea_reabierta: 'Subtarea desmarcada', subtareas: 'Subtareas modificadas',
 };
 const ABIERTOS = ['pendiente', 'en_progreso', 'pausada'];
@@ -314,6 +314,9 @@ function tarjetaTarea(t, { compacta = false } = {}) {
     chips.push(`<span class="chip ${t.entregable_listo ? 'verde' : ''}" title="Entregable: ${esc(t.entregable)}">📦 ${t.entregable_listo ? 'Entregable listo' : 'Entregable pendiente'}</span>`);
   }
   chips.push(chipsDependencia(t));
+  if (t.adjuntos_total) {
+    chips.push(`<button type="button" class="chip chip-adj" data-detalle="${t.id}" data-ir-soporte title="Archivos y enlaces de soporte">📎 ${t.adjuntos_total}</button>`);
+  }
   if (t.comentarios_total) {
     chips.push(`<button type="button" class="chip chip-coment" data-detalle="${t.id}" data-ir-comentarios title="Último comentario: ${esc(fmtFecha(t.ultimo_comentario))}">💬 ${t.comentarios_total}</button>`);
   }
@@ -802,6 +805,50 @@ function formFechaCompletado(t, desdeDetalle = false, sub = null) {
     </form>`);
 }
 
+const ICONOS_ARCHIVO = [[/\.pdf$/i, '📕'], [/\.(xlsx?|xlsm|csv)$/i, '📊'], [/\.(docx?|odt|rtf)$/i, '📄'],
+  [/\.(pptx?|odp)$/i, '📽'], [/\.(png|jpe?g|gif|webp|bmp)$/i, '🖼'], [/\.(zip|rar|7z)$/i, '🗜'], [/\.(msg|eml)$/i, '✉️'],
+  [/\.(pbix|pbit)$/i, '📈'], [/\.(txt|log|md)$/i, '📝']];
+const legible = (url) => { try { return decodeURI(url); } catch { return url; } };
+const iconoAdjunto = (a) => (a.tipo === 'enlace' ? '🔗' : (ICONOS_ARCHIVO.find(([re]) => re.test(a.nombre)) || [null, '📎'])[1]);
+
+function bloqueSoporte(t) {
+  const lista = t.adjuntos.map((a) => `<li>
+      <span class="adj-ico">${iconoAdjunto(a)}</span>
+      <div class="adj-info">
+        <a href="${esc(a.url)}" target="_blank" rel="noopener noreferrer" title="${a.tipo === 'enlace' ? esc(a.url) : a.visible ? 'Abrir' : 'Descargar'}">${esc(a.nombre)}</a>
+        <small>${a.tipo === 'enlace' ? esc(legible(a.url).replace(/^https?:\/\//, '')) : esc(a.tamano_texto)} · ${fmtFecha(a.creado_en)}</small>
+      </div>
+      ${a.tipo === 'archivo' ? `<a class="ico" href="${esc(a.url)}?descargar=1" title="Descargar">⬇</a>` : ''}
+      <button type="button" class="ico" data-borrar-adjunto="${a.id}" data-tarea="${t.id}" title="Quitar">🗑</button>
+    </li>`).join('');
+  return `<h3 id="sec-soporte" style="margin:18px 0 8px">Soporte <small class="sutil">archivos y enlaces ${t.adjuntos.length || ''}</small></h3>
+    ${t.adjuntos.length ? `<ul class="adjuntos">${lista}</ul>` : ''}
+    <label class="drop-adjuntos" data-tarea="${t.id}">
+      <input type="file" multiple data-subir-adjuntos="${t.id}">
+      <span>📎 Arrastra archivos aquí o <u>haz clic para elegir</u> <small>(máx. 50 MB cada uno)</small></span>
+    </label>
+    <form id="f-enlace" data-tarea="${t.id}" class="f-enlace">
+      <input name="url" placeholder="🔗 Pega un enlace (SharePoint, web…)" autocomplete="off">
+      <input name="nombre" placeholder="Nombre (opcional)" autocomplete="off">
+      <button class="secundario">Agregar enlace</button>
+    </form>`;
+}
+
+async function subirAdjuntos(tid, archivos) {
+  if (!archivos || !archivos.length) return;
+  const datos = new FormData();
+  [...archivos].forEach((f) => datos.append('archivo', f, f.name));
+  toast(`Subiendo ${archivos.length} archivo(s)…`);
+  try {
+    const r = await fetch(`/api/tareas/${tid}/adjuntos`, { method: 'POST', body: datos });
+    const j = await r.json().catch(() => null);
+    if (!r.ok) throw new Error((j && j.error) || `Error ${r.status}`);
+    toast(`📎 ${j.length} archivo(s) adjuntado(s)`, 'exito');
+    await verDetalle(tid, 'soporte');
+    render();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 function bloqueComentarios(t) {
   const lista = t.comentarios.map((c) => `<li data-comentario="${c.id}">
       <div class="coment-texto">${esc(c.texto)}</div>
@@ -817,7 +864,7 @@ function bloqueComentarios(t) {
     </form>`;
 }
 
-async function verDetalle(id, irComentarios = false) {
+async function verDetalle(id, ir = false) {
   const t = await api(`/api/tareas/${id}`);
   const filas = [
     ['Estado', ESTADOS[t.estado]], ['Prioridad', PRIORIDADES[t.prioridad].split(' (')[0]], ['Categoría', esc(t.categoria)],
@@ -843,12 +890,15 @@ async function verDetalle(id, irComentarios = false) {
       ${t.frena_a.length ? `<div class="sutil" style="margin:10px 0 6px">Estas tareas te esperan:</div><ul class="deps">${t.frena_a.map((x) => `<li><span>⛓</span>
           <a href="#" data-detalle="${x.id}">${esc(x.titulo)}</a></li>`).join('')}</ul>` : ''}` : ''}
     ${t.subtareas_total || abierta(t) ? `<h3 style="margin:18px 0 8px">Subtareas</h3><div data-detalle-subs="${t.id}">${barraAvance(t, false)}${checklistSubtareas(t)}</div>` : ''}
+    ${bloqueSoporte(t)}
     ${bloqueComentarios(t)}
     <h3 style="margin:18px 0 12px">Línea de tiempo</h3>
     <ul class="timeline">${t.eventos.map((e) => `<li class="ev-${e.tipo}"><b>${EVENTOS[e.tipo] || esc(e.tipo)}</b>
       <div class="cuando">${fmtFecha(e.momento)}</div>${e.detalle ? `<div class="sutil">${esc(e.detalle)}</div>` : ''}</li>`).join('')}</ul>
     <div class="botones"><button class="secundario" data-editar="${t.id}">✎ Editar</button><button class="primario" data-cerrar>Cerrar</button></div>`);
-  if (irComentarios) {
+  if (ir === 'soporte') {
+    $('#sec-soporte').scrollIntoView({ block: 'start' });
+  } else if (ir) {
     $('#sec-comentarios').scrollIntoView({ block: 'start' });
     $('#f-comentario textarea').focus();
   }
@@ -950,6 +1000,12 @@ document.addEventListener('submit', async (e) => {
       await render();
       const otra = enModal ? $('#modal-caja .f-subtarea input') : $(`#vista .f-subtarea[data-tarea="${t.id}"] input`);
       if (otra) otra.focus();
+    } else if (f.id === 'f-enlace') {
+      if (!f.url.value.trim()) return;
+      await api(`/api/tareas/${f.dataset.tarea}/adjuntos`, { method: 'POST', body: { url: f.url.value, nombre: f.nombre.value } });
+      toast('🔗 Enlace agregado', 'exito');
+      await verDetalle(Number(f.dataset.tarea), 'soporte');
+      render();
     } else if (f.id === 'f-comentario') {
       const texto = f.texto.value.trim();
       if (!texto) return;
@@ -1010,7 +1066,7 @@ document.addEventListener('click', async (e) => {
     if (d.vista) { $('#panel-alertas').classList.add('oculto'); st.vista = d.vista; render(); return; }
     if (d.cerrar !== undefined) return cerrarModal();
     if (d.accion) return accionTarea(Number(d.id), d.accion);
-    if (d.detalle) { e.preventDefault(); $('#panel-alertas').classList.add('oculto'); return verDetalle(Number(d.detalle), d.irComentarios !== undefined); }
+    if (d.detalle) { e.preventDefault(); $('#panel-alertas').classList.add('oculto'); return verDetalle(Number(d.detalle), d.irSoporte !== undefined ? 'soporte' : d.irComentarios !== undefined); }
     if (d.editar) {
       let t = st.tareas.find((x) => x.id === Number(d.editar));
       if (!t) t = await api(`/api/tareas/${d.editar}`);
@@ -1059,6 +1115,12 @@ document.addEventListener('click', async (e) => {
       return;
     }
     if (d.cancelarComent) return verDetalle(Number(d.cancelarComent), true);
+    if (d.borrarAdjunto) {
+      if (!confirm('¿Quitar este soporte? Si es un archivo, se borra de la carpeta de adjuntos.')) return;
+      await api(`/api/adjuntos/${d.borrarAdjunto}`, { method: 'DELETE' });
+      await verDetalle(Number(d.tarea), 'soporte');
+      return render();
+    }
     if (d.borrarComentario) {
       if (!confirm('¿Borrar este comentario?')) return;
       await api(`/api/comentarios/${d.borrarComentario}`, { method: 'DELETE' });
@@ -1125,6 +1187,10 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', async (e) => {
   const el = e.target;
+  if (el.dataset.subirAdjuntos && el.files && el.files.length) {
+    subirAdjuntos(Number(el.dataset.subirAdjuntos), el.files);
+    return;
+  }
   if (el.dataset.subirImagen && el.files && el.files[0]) {
     try {
       const dataUrl = await imagenA96(el.files[0]);
@@ -1198,6 +1264,20 @@ document.addEventListener('keydown', (e) => {
     e.target.closest('form').requestSubmit();
   }
 });
+
+['dragenter', 'dragover'].forEach((ev) => document.addEventListener(ev, (e) => {
+  const zona = e.target.closest && e.target.closest('.drop-adjuntos');
+  if (!zona) return;
+  e.preventDefault();
+  zona.classList.add('encima');
+}));
+['dragleave', 'drop'].forEach((ev) => document.addEventListener(ev, (e) => {
+  const zona = e.target.closest && e.target.closest('.drop-adjuntos');
+  if (!zona) return;
+  e.preventDefault();
+  zona.classList.remove('encima');
+  if (ev === 'drop') subirAdjuntos(Number(zona.dataset.tarea), e.dataTransfer.files);
+}));
 
 /* Editor de subtareas: Enter crea la siguiente, Backspace en una vacía la borra, pegar varias líneas crea varias. */
 document.addEventListener('keydown', (e) => {
