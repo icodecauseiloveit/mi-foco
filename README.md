@@ -32,6 +32,7 @@ python app.py                   # opciones: --puerto 8080  --sin-navegador
 | **Subtareas** | Al crear o editar una tarea agregas subtareas (Enter agrega otra; puedes pegar una lista). Cada una se marca por separado y la tarea muestra su avance (1 de 3 = 33 %). Cada marca queda en el historial con fecha y hora. Al completar la última te ofrece cerrar la tarea; si cierras la tarea con subtareas pendientes, te avisa cuáles faltan. |
 | **Dependencias** | Una tarea puede esperar a otra tarea completa o a una subtarea específica ("Depende de" en el formulario). Mientras falte algo queda 🔒 bloqueada: se ve rayada, el filtro *Bloqueadas / Disponibles* la separa e iniciarla o completarla pide confirmación. La tarea requisito muestra "⛓ Frena a N". Al terminar lo que faltaba se avisa 🔓 *Ya puedes empezar*. Se impiden los ciclos (A espera a B y B espera a A). Alerta de *ruta crítica* si una tarea bloqueada vence en menos de 48 h. |
 | **Registrar lo ya hecho** | Al crear una tarea marca *✅ Ya está completada* e indica fecha y hora de completado (no puede ser futura) y, si quieres, el tiempo dedicado. Se calcula si fue a tiempo frente a su fecha límite y cuenta en las estadísticas de ese día. En cualquier tarea completada la fecha aparece como **✅ fecha ✎**: haz clic en ella (en la tarjeta o en el detalle) para poner otra, con atajos Ayer / Hace 2 días / Hace una semana. Queda en el historial y se recalcula si fue a tiempo. |
+| **Reporte de cumplimiento** | *📤 Reporte de cumplimiento* (barra lateral) genera una imagen PNG lista para el correo: periodo (esta semana, semana pasada, este mes, mes pasado o fechas libres), categoría opcional y "Preparado por". Incluye cumplimiento del plan, entregas a tiempo, completadas, en curso/pendientes, vencidas, avance general y la tabla de actividades con prioridad, estado, avance y fechas. *📋 Copiar imagen* la deja en el portapapeles para pegarla con Ctrl + V en Outlook/Gmail; también se puede descargar. Se dibuja en el navegador, sin servicios externos. |
 | **Cronómetro** | Cada *Iniciar → Pausar/Completar* crea una sesión de trabajo. **Una tarea a la vez**: al iniciar otra, la anterior se pausa sola. Si completas sin cronometrar te pregunta cuántos minutos le dedicaste. |
 | **Metas de aprendizaje** | Herramienta, nivel actual → objetivo (1‑5), horas objetivo, fecha, hitos con checklist y registro de práctica. El progreso combina horas y hitos; calcula el **ritmo semanal necesario**. Las horas de tareas vinculadas también suman. |
 | **Rendimiento** | Puntaje 0‑100, entregas a tiempo, atraso promedio, ciclo promedio, real vs. estimado, racha, foco en lo vital (80/20), reprogramaciones, gráficos diarios y por prioridad/categoría (7 a 365 días). |
@@ -71,6 +72,7 @@ GET/POST        /api/metas      PUT/DELETE /api/metas/<id>
 POST            /api/metas/<id>/hitos       PUT/DELETE /api/hitos/<id>
 POST            /api/metas/<id>/registros   DELETE /api/registros/<id>
 GET             /api/estadisticas?dias=30   /api/alertas   /api/frase   /api/historial
+GET             /api/reporte?desde=AAAA-MM-DD&hasta=AAAA-MM-DD[&categoria=Trabajo&sin_fecha=0]
 GET             /api/exportar/tareas.csv    /api/exportar/eventos.csv
 POST            /api/tareas/<id>/subtareas   PUT/DELETE /api/subtareas/<id>   {"completada": true}
 POST/PUT        /api/tareas  {"dependencias": [{"tipo": "tarea"|"subtarea", "id": 7}]}   DELETE /api/dependencias/<id>
@@ -84,7 +86,7 @@ mi_foco/
 ├── app.py          servidor y API
 ├── db.py           esquema SQLite, conexión y respaldos
 ├── frases.py       frases originales inspiradas en los principios de gestión del tiempo de Brian Tracy
-├── static/         index.html · style.css · app.js
+├── static/         index.html · style.css · app.js · reporte.js (imagen del reporte)
 ├── iniciar.bat · iniciar_oculto.vbs · iniciar.sh
 └── data/           (se crea solo) base de datos y respaldos
 ```

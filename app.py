@@ -51,8 +51,9 @@ def limite_dt(valor):
 
 def fmt_dur_dias(dias):
     if dias < 1:
-        return f"{round(dias * 24)} h"
-    return f"{dias:.1f} días".replace(".0 ", " ")
+        return f"{max(1, round(dias * 24))} h"
+    v = round(dias, 1)
+    return f"{v:g}".replace(".", ",") + (" día" if v == 1 else " días")
 
 
 def cap(texto):
@@ -1294,6 +1295,110 @@ def api_estadisticas():
         "por_prioridad": por_prioridad,
         "por_categoria": sorted(({"categoria": k, "completadas": v, "minutos_foco": round(foco_cat.get(k, 0))}
                                  for k, v in cats.items()), key=lambda x: -x["completadas"]),
+    })
+
+
+# ───────────────────────── reporte de cumplimiento ─────────────────────────
+ORDEN_REPORTE = {"vencida": 0, "bloqueada": 1, "en_curso": 2, "pendiente": 3, "atrasada": 4, "a_tiempo": 5, "sin_fecha": 6}
+
+
+def estado_reporte(t):
+    """Clasifica una tarea para el reporte: (código, texto)."""
+    if t["estado"] == "completada":
+        if t["completada_a_tiempo"] is True:
+            return "a_tiempo", "Completada a tiempo"
+        if t["completada_a_tiempo"] is False:
+            return "atrasada", f"Completada con {fmt_dur_dias(t['dias_atraso'])} de atraso"
+        return "sin_fecha", "Completada"
+    if t["vencida"]:
+        return "vencida", f"Vencida hace {fmt_dur_dias(t['dias_atraso'])}"
+    if t["bloqueada"]:
+        return "bloqueada", "Bloqueada (en espera)"
+    if t["estado"] in ("en_progreso", "pausada") or (t["progreso_pct"] or 0) > 0:
+        return "en_curso", "En curso"
+    return "pendiente", "Pendiente"
+
+
+@app.get("/api/reporte")
+def api_reporte():
+    """Estatus de cumplimiento de actividades entre ?desde y ?hasta (fechas inclusivas).
+    Opcional: ?categoria=Trabajo · ?sin_fecha=0 para omitir pendientes sin fecha límite."""
+    try:
+        desde = date.fromisoformat(request.args["desde"][:10])
+        hasta = date.fromisoformat(request.args["hasta"][:10])
+    except (KeyError, ValueError):
+        raise ValueError("Indica las fechas desde y hasta (AAAA-MM-DD).")
+    if hasta < desde:
+        raise ValueError("La fecha final no puede ser anterior a la inicial.")
+    categoria = (request.args.get("categoria") or "").strip().lower()
+    sin_fecha = request.args.get("sin_fecha", "1") != "0"
+    ahora = datetime.now()
+    d0 = datetime.combine(desde, datetime.min.time())
+    d1 = datetime.combine(hasta + timedelta(days=1), datetime.min.time())
+    corte = min(d1, ahora)
+
+    with db.conexion() as conn:
+        marcar_vencidas(conn)
+        tareas = listar_tareas(conn, incluir_cerradas=True)
+
+    def en_rango(iso):
+        d = parse_dt(iso)
+        return d is not None and d0 <= d < d1
+
+    actividades, plan = [], []
+    for t in tareas:
+        if categoria and (t["categoria"] or "").lower() != categoria:
+            continue
+        lim = limite_dt(t["fecha_limite"])
+        if lim and d0 <= lim < corte and t["estado"] != "cancelada":
+            plan.append(t)
+        if t["estado"] == "cancelada":
+            continue
+        if t["estado"] == "completada":
+            incluir = en_rango(t["completada_en"])
+        else:  # abierta: lo que vence hasta el fin del periodo, lo que está en marcha o lo creado en él
+            incluir = ((lim is not None and lim < d1) or t["estado"] in ("en_progreso", "pausada")
+                       or en_rango(t["creada_en"]) or (lim is None and sin_fecha))
+        if not incluir:
+            continue
+        codigo, texto = estado_reporte(t)
+        progreso = 100 if t["estado"] == "completada" else (t["progreso_pct"] or 0)
+        actividades.append({
+            "id": t["id"], "titulo": t["titulo"], "prioridad": t["prioridad"], "categoria": t["categoria"],
+            "estado": codigo, "estado_texto": texto, "progreso": progreso,
+            "fecha_limite": t["fecha_limite"], "completada_en": t["completada_en"],
+            "subtareas": f"{t['subtareas_hechas']}/{t['subtareas_total']}" if t["subtareas_total"] else None,
+            "entregable": t["entregable"],
+        })
+    actividades.sort(key=lambda a: (ORDEN_REPORTE[a["estado"]], a["prioridad"],
+                                    a["completada_en"] or a["fecha_limite"] or "9999"))
+
+    completadas = [a for a in actividades if a["estado"] in ("a_tiempo", "atrasada", "sin_fecha")]
+    con_fecha = [a for a in completadas if a["estado"] != "sin_fecha"]
+    a_tiempo = [a for a in completadas if a["estado"] == "a_tiempo"]
+    cumplidas_plan = [t for t in plan if t["estado"] == "completada" and t["completada_a_tiempo"]]
+
+    def pct(n, d):
+        return round(100 * n / d) if d else None
+
+    return jsonify({
+        "desde": desde.isoformat(), "hasta": hasta.isoformat(),
+        "categoria": request.args.get("categoria") or None,
+        "generado": db.ahora(),
+        "kpis": {
+            "actividades": len(actividades),
+            "completadas": len(completadas),
+            "a_tiempo": len(a_tiempo),
+            "tarde": len(con_fecha) - len(a_tiempo),
+            "entregas_a_tiempo_pct": pct(len(a_tiempo), len(con_fecha)),
+            "plan_total": len(plan), "plan_cumplido": len(cumplidas_plan),
+            "cumplimiento_plan_pct": pct(len(cumplidas_plan), len(plan)),
+            "en_curso": sum(1 for a in actividades if a["estado"] in ("en_curso", "bloqueada")),
+            "pendientes": sum(1 for a in actividades if a["estado"] == "pendiente"),
+            "vencidas": sum(1 for a in actividades if a["estado"] == "vencida"),
+            "avance_pct": round(sum(a["progreso"] for a in actividades) / len(actividades)) if actividades else None,
+        },
+        "actividades": actividades,
     })
 
 

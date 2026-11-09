@@ -409,3 +409,15 @@ body.modo-pantalla #vista { flex: 1; min-height: 0; }
 .chip-fecha:hover .lapiz { opacity: 1; }
 .enlace-fecha { border: 0; background: none; padding: 0; font: inherit; font-weight: inherit; color: var(--exito); cursor: pointer; text-align: left; text-decoration: underline dotted; text-underline-offset: 3px; }
 .atajos-fecha { display: flex; gap: 6px; flex-wrap: wrap; margin: -4px 0 8px; }
+
+/* Reporte de cumplimiento */
+.modal-caja.modal-ancho { width: min(1080px, 100%); }
+.reporte-opciones { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.rpt-rapidos { display: flex; gap: 6px; flex-wrap: wrap; }
+.rpt-campos { display: grid; grid-template-columns: 150px 150px 170px 1fr; gap: 10px; }
+.rpt-campos label { margin-bottom: 0; }
+.reporte-opciones .check { margin-bottom: 0; }
+.rpt-vista { border: 1px solid var(--borde); border-radius: 12px; background: #fff; max-height: 52vh; overflow: auto; }
+.rpt-vista img { display: block; width: 100%; height: auto; }
+.rpt-vista .vacio { color: #6b7085; }
+@media (max-width: 820px) { .rpt-campos { grid-template-columns: 1fr 1fr; } }

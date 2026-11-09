@@ -621,7 +621,7 @@ async function refrescar() { await render(); revisarAlertas(); }
 
 /* ─────────── modales y formularios ─────────── */
 function abrirModal(html) { $('#modal-caja').innerHTML = html; $('#modal').classList.remove('oculto'); const f = $('#modal-caja input, #modal-caja textarea'); if (f) f.focus(); }
-function cerrarModal() { $('#modal').classList.add('oculto'); $('#modal-caja').innerHTML = ''; }
+function cerrarModal() { $('#modal').classList.add('oculto'); $('#modal-caja').innerHTML = ''; $('#modal-caja').classList.remove('modal-ancho'); }
 
 function selectorCategoria(actual = 'General', nombre = 'categoria') {
   const lista = categorias();
@@ -1163,6 +1163,7 @@ document.addEventListener('keydown', (e) => {
 });
 $('#btn-nueva').addEventListener('click', () => formTarea());
 $('#btn-catalogos').addEventListener('click', () => gestionarCatalogos());
+$('#btn-reporte').addEventListener('click', () => abrirReporte());
 $('#btn-respaldo').addEventListener('click', async () => {
   try { const r = await api('/api/respaldo', { method: 'POST' }); toast(`Respaldo creado: ${r.archivo}`, 'exito'); }
   catch (err) { toast(err.message, 'error'); }
