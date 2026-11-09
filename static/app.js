@@ -459,17 +459,19 @@ function filtrarTareas() {
   });
 }
 
-function pintarListaTareas() {
+function htmlListaTareas() {
   const lista = filtrarTareas();
+  return `<p class="sutil" style="margin-bottom:10px">${lista.length} tarea(s)</p>` + listaTareas(lista, '<span class="grande">🔍</span>No hay tareas con esos filtros.');
+}
+function pintarListaTareas() {
   const el = $('#lista-tareas');
-  if (el) el.innerHTML = `<p class="sutil" style="margin-bottom:10px">${lista.length} tarea(s)</p>` + listaTareas(lista, '<span class="grande">🔍</span>No hay tareas con esos filtros.');
+  if (el) el.innerHTML = htmlListaTareas();
 }
 
 async function vistaTareas() {
   await Promise.all([cargarTareas(), cargarMetas(), cargarCatalogos()]);
   const f = st.filtros;
   const opt = (v, l, sel) => `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>${esc(l)}</option>`;
-  setTimeout(pintarListaTareas, 0);
   return `
     <div class="filtros">
       <input id="f-q" placeholder="Buscar…" value="${esc(f.q)}">
@@ -480,7 +482,7 @@ async function vistaTareas() {
       <select id="f-prioridad">${opt('', 'Toda prioridad', f.prioridad)}${Object.keys(PRIORIDADES).map((p) => opt(p, 'Prioridad ' + p, f.prioridad)).join('')}</select>
       <select id="f-categoria">${opt('', 'Toda categoría', f.categoria)}${categorias().map((c) => opt(c, prefijoEmoji(c) + c, f.categoria)).join('')}</select>
     </div>
-    <div id="lista-tareas"></div>`;
+    <div id="lista-tareas">${htmlListaTareas()}</div>`;
 }
 
 function tarjetaMeta(m) {
@@ -707,17 +709,38 @@ async function render() {
   document.body.classList.toggle('modo-pantalla', st.vista === 'hoy');
   // En Metas de aprendizaje solo se ofrece «+ Nueva meta» (dentro de la vista).
   $('#btn-nueva').classList.toggle('oculto', st.vista === 'metas');
+  const misma = st.vistaPintada === st.vista;
+  const y = window.scrollY;
+  const paneles = $$('#vista .panel-cuerpo, #vista .tabla-scroll').map((e) => e.scrollTop);
+  let html;
   try {
-    $('#vista').innerHTML = await fn();
+    html = await fn();
   } catch (e) {
-    $('#vista').innerHTML = `<div class="tarjeta vacio">No se pudo cargar: ${esc(e.message)}</div>`;
+    html = `<div class="tarjeta vacio">No se pudo cargar: ${esc(e.message)}</div>`;
   }
+  $('#vista').innerHTML = html;
+  if (misma) {
+    // Actualización de la misma vista (marcar una subtarea, completar, etc.): quedarse donde estaba.
+    window.scrollTo(0, y);
+    $$('#vista .panel-cuerpo, #vista .tabla-scroll').forEach((e, i) => { e.scrollTop = paneles[i] || 0; });
+  } else {
+    window.scrollTo(0, 0);
+  }
+  st.vistaPintada = st.vista;
 }
 
 async function refrescar() { await render(); revisarAlertas(); }
 
 /* ─────────── modales y formularios ─────────── */
-function abrirModal(html) { $('#modal-caja').innerHTML = html; $('#modal').classList.remove('oculto'); const f = $('#modal-caja input, #modal-caja textarea'); if (f) f.focus(); }
+function abrirModal(html, { enfocar = true } = {}) {
+  const caja = $('#modal-caja');
+  caja.innerHTML = html;
+  delete caja.dataset.detalleAbierto;
+  $('#modal').classList.remove('oculto');
+  caja.scrollTop = 0;
+  const f = enfocar && $('#modal-caja input:not([type=checkbox]):not([type=hidden]), #modal-caja textarea');
+  if (f) f.focus({ preventScroll: true });
+}
 function cerrarModal() { $('#modal').classList.add('oculto'); $('#modal-caja').innerHTML = ''; $('#modal-caja').classList.remove('modal-ancho'); }
 
 function selectorCategoria(actual = 'General', nombre = 'categoria') {
@@ -971,6 +994,10 @@ async function verDetalle(id, ir = false) {
     ['Atraso', t.dias_atraso > 0 ? fmtDias(t.dias_atraso) : 'Ninguno'],
     ['Sesiones de trabajo', t.sesiones.length],
   ];
+  // Si ya se está viendo el detalle de esta misma tarea (p. ej. al marcar una subtarea), conservar el scroll.
+  const caja = $('#modal-caja');
+  const mismo = !$('#modal').classList.contains('oculto') && caja.dataset.detalleAbierto === String(id);
+  const arriba = caja.scrollTop;
   abrirModal(`<h2>${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</h2>
     ${t.descripcion ? `<p style="white-space:pre-wrap">${esc(t.descripcion)}</p>` : ''}
     ${t.entregable ? `<div class="entregable-detalle ${t.entregable_listo ? 'listo' : ''}">📦 <b>Entregable:</b> ${esc(t.entregable)}
@@ -990,7 +1017,9 @@ async function verDetalle(id, ir = false) {
     <h3 style="margin:18px 0 12px">Línea de tiempo</h3>
     <ul class="timeline">${t.eventos.map((e) => `<li class="ev-${e.tipo}"><b>${EVENTOS[e.tipo] || esc(e.tipo)}</b>
       <div class="cuando">${fmtFecha(e.momento)}</div>${e.detalle ? `<div class="sutil">${esc(e.detalle)}</div>` : ''}</li>`).join('')}</ul>
-    <div class="botones"><button class="secundario" data-duplicar="${t.id}">⧉ Duplicar</button><button class="secundario" data-editar="${t.id}">✎ Editar</button><button class="primario" data-cerrar>Cerrar</button></div>`);
+    <div class="botones"><button class="secundario" data-duplicar="${t.id}">⧉ Duplicar</button><button class="secundario" data-editar="${t.id}">✎ Editar</button><button class="primario" data-cerrar>Cerrar</button></div>`, { enfocar: false });
+  caja.dataset.detalleAbierto = String(id);
+  if (mismo && !ir) caja.scrollTop = arriba;
   if (ir === 'soporte') {
     $('#sec-soporte').scrollIntoView({ block: 'start' });
   } else if (ir) {
