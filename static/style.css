@@ -331,3 +331,55 @@ form label.check input { width: 18px; height: 18px; accent-color: var(--exito); 
   .tarea { flex-wrap: wrap; }
   .t-acciones { width: 100%; justify-content: flex-start; }
 }
+
+/* ───────── Vista Hoy: ocupa exactamente la pantalla (100vh), sin scroll de página ───────── */
+body.modo-pantalla main { height: 100vh; display: flex; flex-direction: column; overflow: hidden; padding-top: 20px; padding-bottom: 18px; }
+body.modo-pantalla .topbar { margin-bottom: 14px; }
+body.modo-pantalla #vista { flex: 1; min-height: 0; }
+.hoy { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; }
+
+.hoy-sup { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 14px; }
+.hoy .frase { padding: 16px 22px 14px; }
+.hoy .frase::before { font-size: 7rem; top: -22px; }
+.hoy .frase blockquote { font-size: 1.12rem; margin: 6px 0 10px; padding-right: 60px; }
+.hoy .frase .practica { font-size: .84rem; padding: 7px 11px; }
+.hoy .frase .otra { bottom: 12px; }
+.hoy-kpis { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.hoy-kpis .kpi { padding: 10px 14px; display: flex; flex-direction: column; justify-content: center; }
+.hoy-kpis .kpi .v { font-size: 1.45rem; line-height: 1.1; }
+.hoy-kpis .kpi .d { margin-top: 2px; }
+
+.hoy-medio { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+.hoy .rana { padding: 12px 16px; gap: 12px; }
+.hoy .rana .emoji { font-size: 1.9rem; }
+.hoy .rana .cuerpo b { font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hoy .rana .avance { margin-top: 4px; }
+.hoy .captura { padding: 12px 16px; display: flex; align-items: center; }
+.hoy .captura form { width: 100%; }
+.hoy .captura form input[name="titulo"] { min-width: 0; flex: 1 1 180px; }
+.hoy .captura select[data-selector-categoria] { width: auto; max-width: 128px; flex: 0 1 auto; }
+.hoy .captura select[name="prioridad"] { flex: none; }
+.panel-hoy .t-meta { gap: 4px; }
+.panel-hoy .chip { font-size: .7rem; padding: 1px 7px; }
+
+.hoy-paneles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; min-height: 0; }
+.panel-hoy { display: flex; flex-direction: column; min-height: 0; padding: 14px 14px 10px; }
+.panel-hoy h3 { margin-bottom: 10px; }
+.panel-cuerpo { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 4px 4px 2px; margin-right: -4px; scrollbar-width: thin; }
+.panel-cuerpo .vacio { padding: 24px 8px; }
+/* Tarjetas compactas: acciones debajo del título para columnas angostas */
+.panel-hoy .tarea { flex-wrap: wrap; align-items: flex-start; padding: 10px 12px; gap: 10px; }
+.panel-hoy .t-cuerpo { flex-basis: calc(100% - 44px); }
+.panel-hoy .t-acciones { width: 100%; justify-content: flex-start; padding-left: 44px; }
+.panel-hoy .prio { width: 30px; height: 30px; border-radius: 9px; }
+
+/* Pantallas bajas o angostas: vuelve el desplazamiento normal para no apretar el contenido */
+@media (max-height: 680px), (max-width: 1100px) {
+  body.modo-pantalla main { height: auto; overflow: visible; display: block; }
+  .hoy { height: auto; grid-template-rows: auto; }
+  .panel-cuerpo { overflow: visible; }
+}
+@media (max-width: 1100px) {
+  .hoy-sup, .hoy-medio { grid-template-columns: 1fr; }
+  .hoy-paneles { grid-template-columns: 1fr; }
+}

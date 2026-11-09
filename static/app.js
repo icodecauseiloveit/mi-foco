@@ -26,7 +26,8 @@ const st = {
   tareas: [],
   metas: [],
   catalogos: { categorias: [], descripciones: [] },
-  subInvertidas: new Set(),   // tareas cuya lista de subtareas el usuario abrió/cerró a mano
+  subInvertidas: new Set(),
+  subHoy: new Set(),          // en Hoy van plegadas; aquí las que el usuario abrió   // tareas cuya lista de subtareas el usuario abrió/cerró a mano
   filtros: { estado: 'abiertas', prioridad: '', categoria: '', q: '' },
   periodo: 30,
   alertas: [],
@@ -221,12 +222,12 @@ function checklistSubtareas(t, conAgregar = true) {
     ${conAgregar && abierta(t) ? `<form class="f-subtarea" data-tarea="${t.id}"><input name="titulo" placeholder="+ Agregar subtarea y Enter" autocomplete="off"></form>` : ''}`;
 }
 
-function barraAvance(t, conBoton = true) {
+function barraAvance(t, conBoton = true, expandida = subExpandida(t), compacta = false) {
   if (!t.subtareas_total) return '';
   return `<div class="avance">
     <div class="progreso ${t.progreso_pct === 100 ? 'lleno' : ''}"><div style="width:${t.progreso_pct}%"></div></div>
     <span>${t.subtareas_hechas}/${t.subtareas_total} · <b>${t.progreso_pct}%</b></span>
-    ${conBoton ? `<button class="ico" data-expandir="${t.id}">${subExpandida(t) ? '▾' : '▸'} subtareas</button>` : ''}
+    ${conBoton ? `<button class="ico" data-expandir="${t.id}" ${compacta ? 'data-compacta' : ''}>${expandida ? '▾' : '▸'} subtareas</button>` : ''}
   </div>`;
 }
 
@@ -293,7 +294,8 @@ function requisitoDesdeValor(valor) {
   return null;
 }
 
-function tarjetaTarea(t) {
+function tarjetaTarea(t, { compacta = false } = {}) {
+  const expandida = compacta ? st.subHoy.has(t.id) : subExpandida(t);
   const acc = [];
   if (['pendiente', 'pausada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="iniciar" data-id="${t.id}">▶ ${t.estado === 'pausada' ? 'Reanudar' : 'Iniciar'}</button>`);
   if (t.estado === 'en_progreso') acc.push(`<button class="mini" data-accion="pausar" data-id="${t.id}">⏸ Pausar</button>`);
@@ -316,20 +318,20 @@ function tarjetaTarea(t) {
     <div class="t-cuerpo">
       <div class="t-titulo" data-detalle="${t.id}">${t.bloqueada ? '🔒 ' : ''}${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</div>
       <div class="t-meta">${chips.join('')}</div>
-      ${barraAvance(t)}
-      ${t.subtareas_total && subExpandida(t) ? checklistSubtareas(t) : ''}
+      ${barraAvance(t, true, expandida, compacta)}
+      ${t.subtareas_total && expandida ? checklistSubtareas(t) : ''}
     </div>
     <div class="t-acciones">${acc.join('')}
       <button class="ico" data-editar="${t.id}" title="Editar">✎</button>
-      ${abierta(t) ? `<button class="ico" data-accion="cancelar" data-id="${t.id}" title="Cancelar">⊘</button>` : ''}
-      <button class="ico" data-eliminar="${t.id}" title="Eliminar">🗑</button>
+      ${compacta ? '' : `${abierta(t) ? `<button class="ico" data-accion="cancelar" data-id="${t.id}" title="Cancelar">⊘</button>` : ''}
+      <button class="ico" data-eliminar="${t.id}" title="Eliminar">🗑</button>`}
     </div>
   </article>`;
 }
 
-function listaTareas(tareas, vacio = 'Nada por aquí.') {
+function listaTareas(tareas, vacio = 'Nada por aquí.', opciones = {}) {
   if (!tareas.length) return `<div class="vacio">${vacio}</div>`;
-  return `<div class="lista">${tareas.map(tarjetaTarea).join('')}</div>`;
+  return `<div class="lista">${tareas.map((t) => tarjetaTarea(t, opciones)).join('')}</div>`;
 }
 
 function graficoBarras(datos, formato = (v) => v, clase = '') {
@@ -379,37 +381,46 @@ async function vistaHoy() {
     : `<div class="tarjeta rana"><div class="emoji">🐸</div><div class="cuerpo"><b>No tienes una “rana” definida</b>
       <span class="sutil">Marca como rana la tarea más importante y difícil del día y hazla primero.</span></div></div>`;
 
-  return `
-    <div class="tarjeta frase">
-      <div class="etiqueta">Frase del día · ${esc(frase.principio)}</div>
-      <blockquote>${esc(frase.texto)}</blockquote>
-      <div class="practica">💡 ${esc(frase.practica)}</div>
-      <button class="otra" data-otra-frase>Otra ↻</button>
+  const panel = (titulo, lista, vacio, clase = '') => `
+    <section class="tarjeta panel-hoy ${clase}">
+      <h3>${titulo} <small>${lista.length}</small></h3>
+      <div class="panel-cuerpo">${listaTareas(lista, vacio, { compacta: true })}</div>
+    </section>`;
+
+  return `<div class="hoy">
+    <div class="hoy-sup">
+      <div class="tarjeta frase">
+        <div class="etiqueta">Frase del día · ${esc(frase.principio)}</div>
+        <blockquote>${esc(frase.texto)}</blockquote>
+        <div class="practica">💡 ${esc(frase.practica)}</div>
+        <button class="otra" data-otra-frase>Otra ↻</button>
+      </div>
+      <div class="hoy-kpis">
+        ${kpi(abiertas.length, 'Pendientes')}
+        ${kpi(vencidas.length, 'Vencidas', '', vencidas.length ? 'rojo' : '')}
+        ${kpi(completadasHoy.length, 'Completadas hoy', '', 'verde')}
+        ${kpi(fmtMin(stats.minutos_foco), 'Foco hoy', `Racha: ${stats.racha_dias} día(s)`, 'azul')}
+      </div>
     </div>
 
-    <div class="rejilla r4 mt">
-      ${kpi(abiertas.length, 'Pendientes')}
-      ${kpi(vencidas.length, 'Vencidas', '', vencidas.length ? 'rojo' : '')}
-      ${kpi(completadasHoy.length, 'Completadas hoy', '', 'verde')}
-      ${kpi(fmtMin(stats.minutos_foco), 'Foco hoy', `Racha: ${stats.racha_dias} día(s)`, 'azul')}
+    <div class="hoy-medio">
+      ${bloqueRana}
+      <div class="tarjeta captura">
+        <form id="f-rapida" class="rapida">
+          <input name="titulo" placeholder="Nuevo pendiente + Enter…" autocomplete="off">
+          ${selectorCategoria(st.ultimaCategoria || 'General')}
+          <select name="prioridad">${Object.keys(PRIORIDADES).map((p) => `<option ${p === 'B' ? 'selected' : ''}>${p}</option>`).join('')}</select>
+          <button class="primario">Agregar</button>
+        </form>
+      </div>
     </div>
 
-    <div class="mt">${bloqueRana}</div>
-
-    <div class="tarjeta mt">
-      <form id="f-rapida" class="rapida">
-        <input name="titulo" placeholder="Anota un pendiente y presiona Enter…" autocomplete="off">
-        ${selectorCategoria(st.ultimaCategoria || 'General')}
-        <select name="prioridad">${Object.keys(PRIORIDADES).map((p) => `<option ${p === 'B' ? 'selected' : ''}>${p}</option>`).join('')}</select>
-        <button class="primario">Agregar</button>
-      </form>
+    <div class="hoy-paneles">
+      ${panel('En curso', enCurso, 'Nada en curso. Empieza por tu rana.')}
+      ${panel('Vencidas y por vencer (24 h)', [...vencidas, ...pronto], '<span class="grande">✨</span>Nada vencido ni por vencer.')}
+      ${panel('Otras tareas A', prioA, 'No hay más tareas A pendientes.')}
     </div>
-
-    <div class="rejilla r2 mt">
-      <div class="tarjeta"><h3>En curso <small>${enCurso.length}</small></h3>${listaTareas(enCurso, 'Nada en curso. Empieza por tu rana.')}</div>
-      <div class="tarjeta"><h3>Vencidas y por vencer (24 h) <small>${vencidas.length + pronto.length}</small></h3>${listaTareas([...vencidas, ...pronto], '<span class="grande">✨</span>Nada vencido ni por vencer (fuera de lo que está en curso).')}</div>
-    </div>
-    <div class="tarjeta mt"><h3>Otras tareas A <small>${prioA.length}</small></h3>${listaTareas(prioA, 'No hay más tareas A pendientes.')}</div>`;
+  </div>`;
 }
 
 function filtrarTareas() {
@@ -591,6 +602,7 @@ async function render() {
   const [titulo, fn] = VISTAS[st.vista];
   $('#titulo-vista').textContent = titulo;
   $$('#nav button').forEach((b) => b.classList.toggle('activo', b.dataset.vista === st.vista));
+  document.body.classList.toggle('modo-pantalla', st.vista === 'hoy');
   try {
     $('#vista').innerHTML = await fn();
   } catch (e) {
@@ -964,7 +976,8 @@ document.addEventListener('click', async (e) => {
     }
     if (d.expandir) {
       const id = Number(d.expandir);
-      if (st.subInvertidas.has(id)) st.subInvertidas.delete(id); else st.subInvertidas.add(id);
+      const conjunto = d.compacta !== undefined ? st.subHoy : st.subInvertidas;
+      if (conjunto.has(id)) conjunto.delete(id); else conjunto.add(id);
       return render();
     }
     if (d.renombrarCat) {
