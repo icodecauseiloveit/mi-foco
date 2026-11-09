@@ -1,0 +1,1066 @@
+"""Mi Foco — gestor local de tareas, tiempo y metas de aprendizaje.
+
+Ejecutar:  python app.py            (abre el navegador en http://127.0.0.1:5050)
+           python app.py --sin-navegador --puerto 8080
+"""
+import argparse
+import csv
+import io
+import os
+import sqlite3
+import threading
+import webbrowser
+from datetime import date, datetime, timedelta
+
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from werkzeug.exceptions import HTTPException
+
+import db
+from frases import frase_aleatoria, frase_del_dia
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
+app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+app.json.ensure_ascii = False
+
+ABIERTOS = ("pendiente", "en_progreso", "pausada")
+PRIORIDADES = "ABCDE"
+
+
+# ───────────────────────── utilidades ─────────────────────────
+def parse_dt(valor):
+    if not valor:
+        return None
+    try:
+        return datetime.fromisoformat(str(valor))
+    except ValueError:
+        return None
+
+
+def limite_dt(valor):
+    """Fecha límite como datetime. Si solo trae fecha, se toma el final del día."""
+    d = parse_dt(valor)
+    if d is not None and len(str(valor)) == 10:
+        d = d.replace(hour=23, minute=59, second=59)
+    return d
+
+
+def fmt_dur_dias(dias):
+    if dias < 1:
+        return f"{round(dias * 24)} h"
+    return f"{dias:.1f} días".replace(".0 ", " ")
+
+
+def body():
+    return request.get_json(silent=True) or {}
+
+
+@app.errorhandler(ValueError)
+def _err_valor(e):
+    return jsonify(error=str(e)), 400
+
+
+@app.errorhandler(sqlite3.IntegrityError)
+def _err_integridad(e):
+    return jsonify(error=f"Dato inválido: {e}"), 400
+
+
+@app.errorhandler(HTTPException)
+def _err_http(e):
+    if request.path.startswith("/api/"):
+        return jsonify(error=e.description or e.name), e.code
+    return e
+
+
+# ───────────────────────── tareas: helpers ─────────────────────────
+def registrar_evento(conn, tarea_id, tipo, antes=None, despues=None, detalle=None):
+    conn.execute(
+        "INSERT INTO eventos (tarea_id, tipo, estado_anterior, estado_nuevo, detalle, momento) "
+        "VALUES (?,?,?,?,?,?)",
+        (tarea_id, tipo, antes, despues, detalle, db.ahora()),
+    )
+
+
+def guardar_en_catalogos(conn, categoria=None, descripcion=None):
+    """Registra (o suma un uso a) la categoría y la descripción para reutilizarlas después."""
+    ahora = db.ahora()
+    categoria = (categoria or "").strip()
+    if categoria:
+        conn.execute("INSERT INTO categorias (nombre, usos, creada_en, usada_en) VALUES (?,1,?,?) "
+                     "ON CONFLICT(nombre) DO UPDATE SET usos = usos + 1, usada_en = excluded.usada_en",
+                     (categoria, ahora, ahora))
+    descripcion = (descripcion or "").strip()
+    if descripcion:
+        conn.execute("INSERT INTO descripciones (texto, usos, creada_en, usada_en) VALUES (?,1,?,?) "
+                     "ON CONFLICT(texto) DO UPDATE SET usos = usos + 1, usada_en = excluded.usada_en",
+                     (descripcion, ahora, ahora))
+
+
+def nombre_categoria(conn, nombre):
+    """Devuelve la categoría con la escritura ya guardada (evita 'trabajo' vs 'Trabajo')."""
+    r = conn.execute("SELECT nombre FROM categorias WHERE nombre = ? COLLATE NOCASE", (nombre,)).fetchone()
+    return r["nombre"] if r else nombre
+
+
+def tiempos_por_tarea(conn):
+    """Minutos totales trabajados por tarea y minutos de la sesión abierta (si hay)."""
+    ahora = datetime.now()
+    totales, abiertas = {}, {}
+    for s in conn.execute("SELECT tarea_id, inicio, fin, minutos FROM sesiones"):
+        if s["fin"]:
+            m = s["minutos"] or 0
+        else:
+            m = max(0.0, (ahora - parse_dt(s["inicio"])).total_seconds() / 60)
+            abiertas[s["tarea_id"]] = m
+        totales[s["tarea_id"]] = totales.get(s["tarea_id"], 0) + m
+    return totales, abiertas
+
+
+def subtareas_por_tarea(conn, tid=None):
+    q = "SELECT * FROM subtareas" + (" WHERE tarea_id=?" if tid else "") + " ORDER BY orden, id"
+    res = {}
+    for s in conn.execute(q, (tid,) if tid else ()):
+        d = dict(s)
+        d["completada"] = bool(d["completada"])
+        res.setdefault(d["tarea_id"], []).append(d)
+    return res
+
+
+def serializar(row, totales, abiertas, subs=None):
+    t = dict(row)
+    ahora = datetime.now()
+    lista = (subs or {}).get(t["id"], [])
+    hechas = sum(1 for s in lista if s["completada"])
+    t["subtareas"] = lista
+    t["subtareas_total"] = len(lista)
+    t["subtareas_hechas"] = hechas
+    if t["estado"] == "completada":
+        t["progreso_pct"] = 100
+    elif lista:
+        t["progreso_pct"] = round(100 * hechas / len(lista))
+    else:
+        t["progreso_pct"] = None
+    t["es_rana"] = bool(t["es_rana"])
+    t["tiempo_real_min"] = round(totales.get(t["id"], 0), 1)
+    t["sesion_abierta"] = t["id"] in abiertas
+    t["minutos_sesion_actual"] = round(abiertas.get(t["id"], 0), 1)
+    lim = limite_dt(t["fecha_limite"])
+    fin = parse_dt(t["completada_en"])
+    t["dias_atraso"], t["vencida"], t["horas_restantes"] = 0, False, None
+    if lim and t["estado"] != "cancelada":
+        ref = fin if t["estado"] == "completada" and fin else ahora
+        if ref > lim:
+            t["dias_atraso"] = round((ref - lim).total_seconds() / 86400, 2)
+            t["vencida"] = t["estado"] in ABIERTOS
+        if t["estado"] in ABIERTOS:
+            t["horas_restantes"] = round((lim - ahora).total_seconds() / 3600, 1)
+    creada = parse_dt(t["creada_en"])
+    t["ciclo_horas"] = round((fin - creada).total_seconds() / 3600, 2) if (creada and fin) else None
+    t["completada_a_tiempo"] = (fin <= lim) if (fin and lim and t["estado"] == "completada") else None
+    for k in ("alerta_vencida", "eliminada", "eliminada_en"):
+        t.pop(k, None)
+    return t
+
+
+SQL_TAREAS = (
+    "SELECT t.*, m.herramienta AS meta_nombre FROM tareas t "
+    "LEFT JOIN metas m ON m.id = t.meta_id WHERE t.eliminada = 0"
+)
+
+
+def listar_tareas(conn, incluir_cerradas=False):
+    q = SQL_TAREAS
+    if not incluir_cerradas:
+        q += " AND t.estado IN ('pendiente','en_progreso','pausada')"
+    totales, abiertas = tiempos_por_tarea(conn)
+    subs = subtareas_por_tarea(conn)
+    return [serializar(r, totales, abiertas, subs) for r in conn.execute(q + " ORDER BY t.id DESC")]
+
+
+def fila_tarea(conn, tid):
+    r = conn.execute("SELECT * FROM tareas WHERE id=? AND eliminada=0", (tid,)).fetchone()
+    if not r:
+        abort(404, "Tarea no encontrada.")
+    return r
+
+
+def obtener_tarea(conn, tid):
+    r = conn.execute(SQL_TAREAS + " AND t.id=?", (tid,)).fetchone()
+    if not r:
+        abort(404, "Tarea no encontrada.")
+    totales, abiertas = tiempos_por_tarea(conn)
+    return serializar(r, totales, abiertas, subtareas_por_tarea(conn, tid))
+
+
+def limpiar_subtareas(valor):
+    """Acepta ["texto", ...] o [{"id": 3, "titulo": "texto"}, ...]. Ignora vacías."""
+    if valor is None:
+        return None
+    if not isinstance(valor, list):
+        raise ValueError("Las subtareas deben enviarse como lista.")
+    out = []
+    for item in valor:
+        if isinstance(item, str):
+            item = {"titulo": item}
+        titulo = (item.get("titulo") or "").strip()[:200]
+        if titulo:
+            sid = item.get("id")
+            out.append({"id": int(sid) if sid not in (None, "") else None, "titulo": titulo})
+    return out
+
+
+def sincronizar_subtareas(conn, tid, lista):
+    """Deja la tarea con exactamente esas subtareas (en ese orden), conservando su estado."""
+    ahora = db.ahora()
+    actuales = {s["id"]: s for s in conn.execute("SELECT * FROM subtareas WHERE tarea_id=?", (tid,))}
+    vistos, nuevas, quitadas = set(), [], []
+    for orden, s in enumerate(lista, start=1):
+        if s["id"] in actuales:
+            vistos.add(s["id"])
+            conn.execute("UPDATE subtareas SET titulo=?, orden=? WHERE id=?", (s["titulo"], orden, s["id"]))
+        else:
+            conn.execute("INSERT INTO subtareas (tarea_id, titulo, orden, creada_en) VALUES (?,?,?,?)",
+                         (tid, s["titulo"], orden, ahora))
+            nuevas.append(s["titulo"])
+    for sid, s in actuales.items():
+        if sid not in vistos:
+            conn.execute("DELETE FROM subtareas WHERE id=?", (sid,))
+            quitadas.append(s["titulo"])
+    return nuevas, quitadas
+
+
+def avance_texto(conn, tid):
+    total, hechas = conn.execute("SELECT COUNT(*), COALESCE(SUM(completada),0) FROM subtareas WHERE tarea_id=?",
+                                 (tid,)).fetchone()
+    return f"{hechas}/{total} · {round(100 * hechas / total) if total else 0}%"
+
+
+def marcar_vencidas(conn):
+    """Deja en la bitácora el momento en que cada tarea abierta superó su fecha límite."""
+    ahora = datetime.now()
+    filas = conn.execute(
+        "SELECT id, estado, fecha_limite FROM tareas WHERE eliminada=0 AND alerta_vencida=0 "
+        "AND fecha_limite IS NOT NULL AND estado IN ('pendiente','en_progreso','pausada')"
+    ).fetchall()
+    for r in filas:
+        lim = limite_dt(r["fecha_limite"])
+        if lim and lim < ahora:
+            # Actualización condicional: si otra petición simultánea ya la marcó, no se duplica el evento.
+            cur = conn.execute("UPDATE tareas SET alerta_vencida=1 WHERE id=? AND alerta_vencida=0", (r["id"],))
+            if cur.rowcount == 1:
+                registrar_evento(conn, r["id"], "vencida", r["estado"], r["estado"],
+                                 f"Superó su fecha límite ({r['fecha_limite'].replace('T', ' ')})")
+
+
+def cerrar_sesion(conn, tid, momento):
+    total = 0.0
+    fin = parse_dt(momento)
+    for s in conn.execute("SELECT id, inicio FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchall():
+        m = max(0.0, (fin - parse_dt(s["inicio"])).total_seconds() / 60)
+        conn.execute("UPDATE sesiones SET fin=?, minutos=? WHERE id=?", (momento, round(m, 2), s["id"]))
+        total += m
+    return total
+
+
+def limpiar_tarea(d, parcial=False):
+    out = {}
+    if "titulo" in d or not parcial:
+        titulo = (d.get("titulo") or "").strip()
+        if not titulo:
+            raise ValueError("El título es obligatorio.")
+        out["titulo"] = titulo[:200]
+    if "descripcion" in d:
+        out["descripcion"] = (d.get("descripcion") or "").strip()
+    if "prioridad" in d or not parcial:
+        p = (d.get("prioridad") or "B").strip().upper()
+        if p not in PRIORIDADES:
+            raise ValueError("Prioridad inválida: usa A, B, C, D o E.")
+        out["prioridad"] = p
+    if "categoria" in d or not parcial:
+        out["categoria"] = (d.get("categoria") or "").strip() or "General"
+    if "es_rana" in d:
+        out["es_rana"] = 1 if d.get("es_rana") in (True, 1, "1", "true", "on") else 0
+    if "estimado_min" in d:
+        v = d.get("estimado_min")
+        if v in (None, ""):
+            out["estimado_min"] = None
+        else:
+            v = int(float(v))
+            if v < 0:
+                raise ValueError("El tiempo estimado no puede ser negativo.")
+            out["estimado_min"] = v
+    if "fecha_limite" in d:
+        v = (d.get("fecha_limite") or "").strip()
+        if v and parse_dt(v) is None:
+            raise ValueError("Fecha límite inválida.")
+        out["fecha_limite"] = v or None
+    if "meta_id" in d:
+        v = d.get("meta_id")
+        out["meta_id"] = int(v) if v not in (None, "") else None
+    return out
+
+
+# ───────────────────────── tareas: API ─────────────────────────
+@app.get("/api/tareas")
+def api_listar_tareas():
+    incluir = request.args.get("incluir_cerradas") in ("1", "true")
+    with db.conexion() as conn:
+        marcar_vencidas(conn)
+        return jsonify(listar_tareas(conn, incluir))
+
+
+@app.post("/api/tareas")
+def api_crear_tarea():
+    d = body()
+    campos = limpiar_tarea(d)
+    subtareas = limpiar_subtareas(d.get("subtareas")) or []
+    campos.setdefault("es_rana", 0)
+    ahora = db.ahora()
+    campos.update(estado="pendiente", creada_en=ahora, actualizada_en=ahora)
+    with db.conexion() as conn:
+        campos["categoria"] = nombre_categoria(conn, campos["categoria"])
+        guardar_en_catalogos(conn, campos["categoria"], campos.get("descripcion"))
+        cols = ", ".join(campos)
+        cur = conn.execute(f"INSERT INTO tareas ({cols}) VALUES ({', '.join('?' * len(campos))})",
+                           tuple(campos.values()))
+        tid = cur.lastrowid
+        detalle = f"Prioridad {campos['prioridad']}"
+        if campos.get("fecha_limite"):
+            detalle += f" · fecha límite {campos['fecha_limite'].replace('T', ' ')}"
+        if subtareas:
+            sincronizar_subtareas(conn, tid, subtareas)
+            detalle += f" · {len(subtareas)} subtarea(s)"
+        registrar_evento(conn, tid, "creada", None, "pendiente", detalle)
+        return jsonify(obtener_tarea(conn, tid)), 201
+
+
+@app.get("/api/tareas/<int:tid>")
+def api_detalle_tarea(tid):
+    with db.conexion() as conn:
+        t = obtener_tarea(conn, tid)
+        t["eventos"] = [dict(e) for e in conn.execute(
+            "SELECT * FROM eventos WHERE tarea_id=? ORDER BY momento, id", (tid,))]
+        t["sesiones"] = [dict(s) for s in conn.execute(
+            "SELECT * FROM sesiones WHERE tarea_id=? ORDER BY inicio", (tid,))]
+        return jsonify(t)
+
+
+@app.put("/api/tareas/<int:tid>")
+def api_editar_tarea(tid):
+    d = body()
+    campos = limpiar_tarea(d, parcial=True)
+    subtareas = limpiar_subtareas(d.get("subtareas"))
+    with db.conexion() as conn:
+        actual = fila_tarea(conn, tid)
+        if subtareas is not None:
+            nuevas, quitadas = sincronizar_subtareas(conn, tid, subtareas)
+            if nuevas or quitadas:
+                partes = []
+                if nuevas:
+                    partes.append("agregó " + ", ".join(f"«{x}»" for x in nuevas))
+                if quitadas:
+                    partes.append("quitó " + ", ".join(f"«{x}»" for x in quitadas))
+                registrar_evento(conn, tid, "subtareas", None, None,
+                                 f"Subtareas: {'; '.join(partes)} · avance {avance_texto(conn, tid)}")
+                conn.execute("UPDATE tareas SET actualizada_en=? WHERE id=?", (db.ahora(), tid))
+        if "categoria" in campos:
+            campos["categoria"] = nombre_categoria(conn, campos["categoria"])
+        cambios = {k: v for k, v in campos.items() if actual[k] != v}
+        if cambios:
+            guardar_en_catalogos(conn, cambios.get("categoria"), cambios.get("descripcion"))
+            sets = ", ".join(f"{k}=?" for k in cambios)
+            extra = ", alerta_vencida=0" if "fecha_limite" in cambios else ""
+            conn.execute(f"UPDATE tareas SET {sets}, actualizada_en=?{extra} WHERE id=?",
+                         (*cambios.values(), db.ahora(), tid))
+            if "fecha_limite" in cambios:
+                registrar_evento(conn, tid, "reprogramada", actual["estado"], actual["estado"],
+                                 f"Fecha límite: {actual['fecha_limite'] or 'sin fecha'} → "
+                                 f"{cambios['fecha_limite'] or 'sin fecha'}")
+            if "prioridad" in cambios:
+                registrar_evento(conn, tid, "editada", None, None,
+                                 f"Prioridad {actual['prioridad']} → {cambios['prioridad']}")
+            otros = [k for k in cambios if k not in ("fecha_limite", "prioridad")]
+            if otros:
+                registrar_evento(conn, tid, "editada", None, None, "Cambió: " + ", ".join(otros))
+        return jsonify(obtener_tarea(conn, tid))
+
+
+@app.delete("/api/tareas/<int:tid>")
+def api_eliminar_tarea(tid):
+    """Borrado lógico: la tarea desaparece de las vistas pero su historial se conserva."""
+    ahora = db.ahora()
+    with db.conexion() as conn:
+        t = fila_tarea(conn, tid)
+        cerrar_sesion(conn, tid, ahora)
+        conn.execute("UPDATE tareas SET eliminada=1, eliminada_en=?, actualizada_en=? WHERE id=?",
+                     (ahora, ahora, tid))
+        registrar_evento(conn, tid, "eliminada", t["estado"], None)
+    return jsonify(ok=True)
+
+
+@app.post("/api/tareas/<int:tid>/accion")
+def api_accion_tarea(tid):
+    d = body()
+    accion = d.get("accion")
+    ahora = db.ahora()
+    with db.conexion() as conn:
+        t = fila_tarea(conn, tid)
+        est = t["estado"]
+
+        if accion == "iniciar":
+            if est not in ("pendiente", "pausada"):
+                raise ValueError("Solo se puede iniciar una tarea pendiente o pausada.")
+            # Una tarea a la vez: se pausa cualquier otra en curso.
+            for o in conn.execute("SELECT id FROM tareas WHERE estado='en_progreso' AND id<>? AND eliminada=0",
+                                  (tid,)).fetchall():
+                mins = cerrar_sesion(conn, o["id"], ahora)
+                conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, o["id"]))
+                registrar_evento(conn, o["id"], "pausada", "en_progreso", "pausada",
+                                 f"Pausa automática al iniciar otra tarea · sesión de {mins:.0f} min")
+            tipo = "reanudada" if t["iniciada_en"] else "iniciada"
+            conn.execute("UPDATE tareas SET estado='en_progreso', iniciada_en=COALESCE(iniciada_en, ?), "
+                         "actualizada_en=? WHERE id=?", (ahora, ahora, tid))
+            conn.execute("INSERT INTO sesiones (tarea_id, inicio) VALUES (?,?)", (tid, ahora))
+            registrar_evento(conn, tid, tipo, est, "en_progreso")
+
+        elif accion == "pausar":
+            if est != "en_progreso":
+                raise ValueError("La tarea no está en progreso.")
+            mins = cerrar_sesion(conn, tid, ahora)
+            conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, tid))
+            registrar_evento(conn, tid, "pausada", est, "pausada", f"Sesión de {mins:.0f} min")
+
+        elif accion == "completar":
+            if est not in ABIERTOS:
+                raise ValueError("La tarea ya está cerrada.")
+            mins = cerrar_sesion(conn, tid, ahora)
+            pendientes = conn.execute("SELECT COUNT(*) FROM subtareas WHERE tarea_id=? AND completada=0",
+                                      (tid,)).fetchone()[0]
+            if pendientes:
+                if not d.get("completar_subtareas"):
+                    raise ValueError(f"Quedan {pendientes} subtarea(s) sin completar.")
+                conn.execute("UPDATE subtareas SET completada=1, completada_en=? WHERE tarea_id=? AND completada=0",
+                             (ahora, tid))
+            manual = d.get("minutos_manual")
+            if manual not in (None, "") and float(manual) > 0:
+                m = float(manual)
+                ini = (parse_dt(ahora) - timedelta(minutes=m)).isoformat(timespec="seconds")
+                conn.execute("INSERT INTO sesiones (tarea_id, inicio, fin, minutos, manual) VALUES (?,?,?,?,1)",
+                             (tid, ini, ahora, m))
+                mins += m
+            conn.execute("UPDATE tareas SET estado='completada', completada_en=?, "
+                         "iniciada_en=COALESCE(iniciada_en, ?), actualizada_en=? WHERE id=?",
+                         (ahora, ahora, ahora, tid))
+            lim = limite_dt(t["fecha_limite"])
+            if not lim:
+                detalle = "Sin fecha límite"
+            elif parse_dt(ahora) <= lim:
+                detalle = "A tiempo"
+            else:
+                detalle = f"Con {fmt_dur_dias((parse_dt(ahora) - lim).total_seconds() / 86400)} de atraso"
+            if mins:
+                detalle += f" · última sesión {mins:.0f} min"
+            if pendientes:
+                detalle += f" · se cerraron {pendientes} subtarea(s) pendiente(s)"
+            registrar_evento(conn, tid, "completada", est, "completada", detalle)
+
+        elif accion == "reabrir":
+            if est not in ("completada", "cancelada"):
+                raise ValueError("Solo se reabren tareas completadas o canceladas.")
+            conn.execute("UPDATE tareas SET estado='pendiente', completada_en=NULL, alerta_vencida=0, "
+                         "actualizada_en=? WHERE id=?", (ahora, tid))
+            registrar_evento(conn, tid, "reabierta", est, "pendiente")
+
+        elif accion == "cancelar":
+            if est not in ABIERTOS:
+                raise ValueError("La tarea ya está cerrada.")
+            cerrar_sesion(conn, tid, ahora)
+            conn.execute("UPDATE tareas SET estado='cancelada', actualizada_en=? WHERE id=?", (ahora, tid))
+            registrar_evento(conn, tid, "cancelada", est, "cancelada", d.get("motivo") or None)
+        else:
+            raise ValueError("Acción no válida.")
+
+        return jsonify(obtener_tarea(conn, tid))
+
+
+# ───────────────────────── subtareas ─────────────────────────
+def fila_subtarea(conn, sid):
+    s = conn.execute("SELECT s.*, t.estado AS estado_tarea FROM subtareas s JOIN tareas t ON t.id = s.tarea_id "
+                     "WHERE s.id=? AND t.eliminada=0", (sid,)).fetchone()
+    if not s:
+        abort(404, "Subtarea no encontrada.")
+    return s
+
+
+@app.post("/api/tareas/<int:tid>/subtareas")
+def api_crear_subtarea(tid):
+    titulo = (body().get("titulo") or "").strip()[:200]
+    if not titulo:
+        raise ValueError("Escribe la subtarea.")
+    with db.conexion() as conn:
+        fila_tarea(conn, tid)
+        orden = conn.execute("SELECT COALESCE(MAX(orden),0)+1 FROM subtareas WHERE tarea_id=?", (tid,)).fetchone()[0]
+        conn.execute("INSERT INTO subtareas (tarea_id, titulo, orden, creada_en) VALUES (?,?,?,?)",
+                     (tid, titulo, orden, db.ahora()))
+        registrar_evento(conn, tid, "subtareas", None, None, f"Agregó «{titulo}» · avance {avance_texto(conn, tid)}")
+        return jsonify(obtener_tarea(conn, tid)), 201
+
+
+@app.put("/api/subtareas/<int:sid>")
+def api_editar_subtarea(sid):
+    d = body()
+    ahora = db.ahora()
+    with db.conexion() as conn:
+        s = fila_subtarea(conn, sid)
+        tid = s["tarea_id"]
+        if (d.get("titulo") or "").strip():
+            conn.execute("UPDATE subtareas SET titulo=? WHERE id=?", (d["titulo"].strip()[:200], sid))
+        if "completada" in d and bool(d["completada"]) != bool(s["completada"]):
+            hecha = bool(d["completada"])
+            conn.execute("UPDATE subtareas SET completada=?, completada_en=? WHERE id=?",
+                         (int(hecha), ahora if hecha else None, sid))
+            if hecha:  # avanzar en una subtarea cuenta como haber empezado la tarea
+                conn.execute("UPDATE tareas SET iniciada_en=COALESCE(iniciada_en, ?), actualizada_en=? WHERE id=?",
+                             (ahora, ahora, tid))
+            registrar_evento(conn, tid, "subtarea_completada" if hecha else "subtarea_reabierta", None, None,
+                             f"{'✓' if hecha else '↺'} «{s['titulo']}» · avance {avance_texto(conn, tid)}")
+        return jsonify(obtener_tarea(conn, tid))
+
+
+@app.delete("/api/subtareas/<int:sid>")
+def api_eliminar_subtarea(sid):
+    with db.conexion() as conn:
+        s = fila_subtarea(conn, sid)
+        conn.execute("DELETE FROM subtareas WHERE id=?", (sid,))
+        registrar_evento(conn, s["tarea_id"], "subtareas", None, None,
+                         f"Quitó «{s['titulo']}» · avance {avance_texto(conn, s['tarea_id'])}")
+        return jsonify(obtener_tarea(conn, s["tarea_id"]))
+
+
+# ───────────────────────── catálogos: categorías y descripciones ─────────────────────────
+def catalogos(conn):
+    cats = [dict(r) for r in conn.execute(
+        "SELECT c.id, c.nombre, c.usos, c.usada_en, "
+        "(SELECT COUNT(*) FROM tareas t WHERE t.eliminada=0 AND t.categoria = c.nombre COLLATE NOCASE) AS tareas "
+        "FROM categorias c ORDER BY c.usos DESC, c.nombre COLLATE NOCASE")]
+    descs = [dict(r) for r in conn.execute(
+        "SELECT id, texto, usos, usada_en FROM descripciones ORDER BY usada_en DESC, usos DESC")]
+    return {"categorias": cats, "descripciones": descs}
+
+
+@app.get("/api/catalogos")
+def api_catalogos():
+    with db.conexion() as conn:
+        return jsonify(catalogos(conn))
+
+
+@app.post("/api/categorias")
+def api_crear_categoria():
+    nombre = (body().get("nombre") or "").strip()[:60]
+    if not nombre:
+        raise ValueError("Escribe el nombre de la categoría.")
+    with db.conexion() as conn:
+        conn.execute("INSERT OR IGNORE INTO categorias (nombre, creada_en) VALUES (?,?)", (nombre, db.ahora()))
+        return jsonify(catalogos(conn)), 201
+
+
+@app.put("/api/categorias/<int:cid>")
+def api_renombrar_categoria(cid):
+    """Renombra la categoría y la actualiza en todas las tareas que la usan."""
+    nuevo = (body().get("nombre") or "").strip()[:60]
+    if not nuevo:
+        raise ValueError("Escribe el nuevo nombre.")
+    with db.conexion() as conn:
+        c = conn.execute("SELECT * FROM categorias WHERE id=?", (cid,)).fetchone()
+        if not c:
+            abort(404, "Categoría no encontrada.")
+        otra = conn.execute("SELECT id FROM categorias WHERE nombre=? COLLATE NOCASE AND id<>?", (nuevo, cid)).fetchone()
+        if otra:  # fusionar con la existente
+            conn.execute("UPDATE categorias SET usos = usos + ? WHERE id=?", (c["usos"], otra["id"]))
+            conn.execute("DELETE FROM categorias WHERE id=?", (cid,))
+            nuevo = nombre_categoria(conn, nuevo)
+        else:
+            conn.execute("UPDATE categorias SET nombre=? WHERE id=?", (nuevo, cid))
+        conn.execute("UPDATE tareas SET categoria=? WHERE categoria=? COLLATE NOCASE", (nuevo, c["nombre"]))
+        return jsonify(catalogos(conn))
+
+
+@app.delete("/api/categorias/<int:cid>")
+def api_eliminar_categoria(cid):
+    """Quita la categoría de la lista. Las tareas que la usaban pasan a 'General'."""
+    with db.conexion() as conn:
+        c = conn.execute("SELECT * FROM categorias WHERE id=?", (cid,)).fetchone()
+        if not c:
+            abort(404, "Categoría no encontrada.")
+        if c["nombre"].lower() == "general":
+            raise ValueError("La categoría General no se puede eliminar.")
+        conn.execute("DELETE FROM categorias WHERE id=?", (cid,))
+        conn.execute("UPDATE tareas SET categoria='General' WHERE categoria=? COLLATE NOCASE", (c["nombre"],))
+        conn.execute("INSERT OR IGNORE INTO categorias (nombre, creada_en) VALUES ('General', ?)", (db.ahora(),))
+        return jsonify(catalogos(conn))
+
+
+@app.post("/api/descripciones")
+def api_crear_descripcion():
+    texto = (body().get("texto") or "").strip()
+    if not texto:
+        raise ValueError("Escribe la descripción.")
+    with db.conexion() as conn:
+        conn.execute("INSERT OR IGNORE INTO descripciones (texto, creada_en) VALUES (?,?)", (texto, db.ahora()))
+        return jsonify(catalogos(conn)), 201
+
+
+@app.delete("/api/descripciones/<int:did>")
+def api_eliminar_descripcion(did):
+    """Quita la descripción de las sugerencias (las tareas conservan su texto)."""
+    with db.conexion() as conn:
+        conn.execute("DELETE FROM descripciones WHERE id=?", (did,))
+        return jsonify(catalogos(conn))
+
+
+# ───────────────────────── metas de aprendizaje ─────────────────────────
+def limpiar_meta(d, parcial=False):
+    out = {}
+    if "herramienta" in d or not parcial:
+        h = (d.get("herramienta") or "").strip()
+        if not h:
+            raise ValueError("Indica la herramienta o tema a aprender.")
+        out["herramienta"] = h[:120]
+    for k in ("descripcion", "categoria"):
+        if k in d:
+            out[k] = (d.get(k) or "").strip()
+    for k in ("nivel_actual", "nivel_objetivo"):
+        if k in d:
+            v = int(d.get(k) or 1)
+            if not 1 <= v <= 5:
+                raise ValueError("Los niveles van de 1 a 5.")
+            out[k] = v
+    if "horas_objetivo" in d:
+        v = float(d.get("horas_objetivo") or 0)
+        if v < 0:
+            raise ValueError("Las horas objetivo no pueden ser negativas.")
+        out["horas_objetivo"] = v
+    for k in ("fecha_inicio", "fecha_objetivo"):
+        if k in d:
+            v = (d.get(k) or "").strip() or None
+            if v:
+                date.fromisoformat(v[:10])
+                v = v[:10]
+            out[k] = v
+    if "estado" in d:
+        if d["estado"] not in ("activa", "pausada", "lograda"):
+            raise ValueError("Estado de meta inválido.")
+        out["estado"] = d["estado"]
+    return out
+
+
+def listar_metas(conn, meta_id=None):
+    q = "SELECT * FROM metas"
+    params = ()
+    if meta_id:
+        q += " WHERE id=?"
+        params = (meta_id,)
+    q += " ORDER BY estado='lograda', estado='pausada', fecha_objetivo IS NULL, fecha_objetivo, id"
+    totales, _ = tiempos_por_tarea(conn)
+    hoy = date.today()
+    salida = []
+    for r in conn.execute(q, params).fetchall():
+        m = dict(r)
+        reg = conn.execute("SELECT COALESCE(SUM(minutos),0) AS mins, MAX(fecha) AS ultima "
+                           "FROM registros_aprendizaje WHERE meta_id=?", (m["id"],)).fetchone()
+        tareas = conn.execute("SELECT id, estado FROM tareas WHERE meta_id=? AND eliminada=0",
+                              (m["id"],)).fetchall()
+        min_tareas = sum(totales.get(t["id"], 0) for t in tareas)
+        horas = (reg["mins"] + min_tareas) / 60
+        hitos = [dict(h) for h in conn.execute(
+            "SELECT * FROM hitos_meta WHERE meta_id=? ORDER BY orden, id", (m["id"],))]
+        hechos = sum(1 for h in hitos if h["completado"])
+        comps = []
+        if m["horas_objetivo"]:
+            comps.append(min(1.0, horas / m["horas_objetivo"]))
+        if hitos:
+            comps.append(hechos / len(hitos))
+        progreso = round(100 * sum(comps) / len(comps)) if comps else 0
+        if m["estado"] == "lograda":
+            progreso = 100
+        dias_rest = (date.fromisoformat(m["fecha_objetivo"]) - hoy).days if m["fecha_objetivo"] else None
+        faltan = max(0.0, (m["horas_objetivo"] or 0) - horas)
+        ritmo = round(faltan / max(1.0, dias_rest / 7), 1) if (dias_rest is not None and dias_rest > 0) else None
+        m.update(
+            horas_acumuladas=round(horas, 1),
+            horas_tareas=round(min_tareas / 60, 1),
+            horas_faltantes=round(faltan, 1),
+            hitos=hitos,
+            hitos_completados=hechos,
+            progreso_pct=progreso,
+            dias_restantes=dias_rest,
+            ritmo_semanal_necesario=ritmo,
+            ultima_practica=reg["ultima"],
+            tareas_vinculadas=len(tareas),
+            tareas_abiertas=sum(1 for t in tareas if t["estado"] in ABIERTOS),
+            registros=[dict(x) for x in conn.execute(
+                "SELECT * FROM registros_aprendizaje WHERE meta_id=? ORDER BY fecha DESC, id DESC LIMIT 15",
+                (m["id"],))],
+        )
+        salida.append(m)
+    return salida
+
+
+def meta_o_404(conn, mid):
+    if not conn.execute("SELECT 1 FROM metas WHERE id=?", (mid,)).fetchone():
+        abort(404, "Meta no encontrada.")
+
+
+@app.get("/api/metas")
+def api_listar_metas():
+    with db.conexion() as conn:
+        return jsonify(listar_metas(conn))
+
+
+@app.post("/api/metas")
+def api_crear_meta():
+    campos = limpiar_meta(body())
+    ahora = db.ahora()
+    campos.setdefault("fecha_inicio", date.today().isoformat())
+    campos.update(creada_en=ahora, actualizada_en=ahora)
+    with db.conexion() as conn:
+        cur = conn.execute(f"INSERT INTO metas ({', '.join(campos)}) VALUES ({', '.join('?' * len(campos))})",
+                           tuple(campos.values()))
+        return jsonify(listar_metas(conn, cur.lastrowid)[0]), 201
+
+
+@app.put("/api/metas/<int:mid>")
+def api_editar_meta(mid):
+    campos = limpiar_meta(body(), parcial=True)
+    with db.conexion() as conn:
+        meta_o_404(conn, mid)
+        if campos:
+            if campos.get("estado") == "lograda":
+                campos["lograda_en"] = db.ahora()
+            elif "estado" in campos:
+                campos["lograda_en"] = None
+            campos["actualizada_en"] = db.ahora()
+            conn.execute(f"UPDATE metas SET {', '.join(f'{k}=?' for k in campos)} WHERE id=?",
+                         (*campos.values(), mid))
+        return jsonify(listar_metas(conn, mid)[0])
+
+
+@app.delete("/api/metas/<int:mid>")
+def api_eliminar_meta(mid):
+    with db.conexion() as conn:
+        meta_o_404(conn, mid)
+        conn.execute("DELETE FROM metas WHERE id=?", (mid,))
+    return jsonify(ok=True)
+
+
+@app.post("/api/metas/<int:mid>/hitos")
+def api_crear_hito(mid):
+    titulo = (body().get("titulo") or "").strip()
+    if not titulo:
+        raise ValueError("Escribe el hito.")
+    with db.conexion() as conn:
+        meta_o_404(conn, mid)
+        orden = conn.execute("SELECT COALESCE(MAX(orden),0)+1 FROM hitos_meta WHERE meta_id=?", (mid,)).fetchone()[0]
+        conn.execute("INSERT INTO hitos_meta (meta_id, titulo, orden, creado_en) VALUES (?,?,?,?)",
+                     (mid, titulo[:200], orden, db.ahora()))
+        return jsonify(listar_metas(conn, mid)[0]), 201
+
+
+@app.put("/api/hitos/<int:hid>")
+def api_editar_hito(hid):
+    d = body()
+    with db.conexion() as conn:
+        h = conn.execute("SELECT * FROM hitos_meta WHERE id=?", (hid,)).fetchone()
+        if not h:
+            abort(404, "Hito no encontrado.")
+        if "completado" in d:
+            hecho = 1 if d["completado"] else 0
+            conn.execute("UPDATE hitos_meta SET completado=?, completado_en=? WHERE id=?",
+                         (hecho, db.ahora() if hecho else None, hid))
+        if (d.get("titulo") or "").strip():
+            conn.execute("UPDATE hitos_meta SET titulo=? WHERE id=?", (d["titulo"].strip()[:200], hid))
+        return jsonify(listar_metas(conn, h["meta_id"])[0])
+
+
+@app.delete("/api/hitos/<int:hid>")
+def api_eliminar_hito(hid):
+    with db.conexion() as conn:
+        conn.execute("DELETE FROM hitos_meta WHERE id=?", (hid,))
+    return jsonify(ok=True)
+
+
+@app.post("/api/metas/<int:mid>/registros")
+def api_registrar_practica(mid):
+    d = body()
+    minutos = int(float(d.get("minutos") or 0))
+    if minutos <= 0:
+        raise ValueError("Indica los minutos practicados.")
+    fecha = (d.get("fecha") or date.today().isoformat())[:10]
+    date.fromisoformat(fecha)
+    with db.conexion() as conn:
+        meta_o_404(conn, mid)
+        conn.execute("INSERT INTO registros_aprendizaje (meta_id, fecha, minutos, nota, creado_en) VALUES (?,?,?,?,?)",
+                     (mid, fecha, minutos, (d.get("nota") or "").strip(), db.ahora()))
+        return jsonify(listar_metas(conn, mid)[0]), 201
+
+
+@app.delete("/api/registros/<int:rid>")
+def api_eliminar_registro(rid):
+    with db.conexion() as conn:
+        conn.execute("DELETE FROM registros_aprendizaje WHERE id=?", (rid,))
+    return jsonify(ok=True)
+
+
+# ───────────────────────── rendimiento ─────────────────────────
+@app.get("/api/estadisticas")
+def api_estadisticas():
+    dias = max(1, min(365, int(request.args.get("dias", 30))))
+    ahora = datetime.now()
+    desde = (ahora - timedelta(days=dias - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    with db.conexion() as conn:
+        marcar_vencidas(conn)
+        tareas = listar_tareas(conn, incluir_cerradas=True)
+        sesiones = conn.execute(
+            "SELECT s.inicio, s.fin, s.minutos, t.categoria FROM sesiones s "
+            "JOIN tareas t ON t.id = s.tarea_id WHERE t.eliminada = 0").fetchall()
+        reprogramaciones = conn.execute(
+            "SELECT COUNT(*) FROM eventos WHERE tipo='reprogramada' AND momento >= ?",
+            (desde.isoformat(timespec="seconds"),)).fetchone()[0]
+        practica = conn.execute(
+            "SELECT fecha, minutos FROM registros_aprendizaje WHERE fecha >= ?",
+            (desde.date().isoformat(),)).fetchall()
+        subs_hechas = conn.execute(
+            "SELECT COUNT(*) FROM subtareas s JOIN tareas t ON t.id=s.tarea_id "
+            "WHERE t.eliminada=0 AND s.completada=1 AND s.completada_en >= ?",
+            (desde.isoformat(timespec="seconds"),)).fetchone()[0]
+
+    def en_periodo(iso):
+        d = parse_dt(iso)
+        return d is not None and d >= desde
+
+    creadas = [t for t in tareas if en_periodo(t["creada_en"])]
+    completadas = [t for t in tareas if t["estado"] == "completada" and en_periodo(t["completada_en"])]
+    con_limite = [t for t in completadas if t["completada_a_tiempo"] is not None]
+    a_tiempo = [t for t in con_limite if t["completada_a_tiempo"]]
+    tarde = [t for t in con_limite if not t["completada_a_tiempo"]]
+    ciclos = [t["ciclo_horas"] for t in completadas if t["ciclo_horas"] is not None]
+    estimadas = [t for t in completadas if t["estimado_min"] and t["tiempo_real_min"] > 0]
+    abiertas = [t for t in tareas if t["estado"] in ABIERTOS]
+
+    serie = [(desde + timedelta(days=i)).date().isoformat() for i in range(dias)]
+    comp_dia = dict.fromkeys(serie, 0)
+    foco_dia = dict.fromkeys(serie, 0.0)
+    apr_dia = dict.fromkeys(serie, 0.0)
+    for t in completadas:
+        k = t["completada_en"][:10]
+        if k in comp_dia:
+            comp_dia[k] += 1
+    foco_cat = {}
+    for s in sesiones:
+        ini = parse_dt(s["inicio"])
+        fin = parse_dt(s["fin"]) or ahora
+        m = s["minutos"] if s["minutos"] is not None else max(0, (fin - ini).total_seconds() / 60)
+        k = ini.date().isoformat()
+        if k in foco_dia:
+            foco_dia[k] += m
+            foco_cat[s["categoria"] or "General"] = foco_cat.get(s["categoria"] or "General", 0) + m
+    for p in practica:
+        if p["fecha"] in apr_dia:
+            apr_dia[p["fecha"]] += p["minutos"]
+
+    # Racha: días consecutivos (hasta hoy o ayer) con al menos una tarea completada.
+    dias_con_logro = {t["completada_en"][:10] for t in tareas if t["estado"] == "completada" and t["completada_en"]}
+    racha, cursor = 0, date.today()
+    if cursor.isoformat() not in dias_con_logro:
+        cursor -= timedelta(days=1)
+    while cursor.isoformat() in dias_con_logro:
+        racha += 1
+        cursor -= timedelta(days=1)
+
+    por_prioridad = [{
+        "prioridad": p,
+        "completadas": sum(1 for t in completadas if t["prioridad"] == p),
+        "abiertas": sum(1 for t in abiertas if t["prioridad"] == p),
+    } for p in PRIORIDADES]
+    cats = {}
+    for t in completadas:
+        cats[t["categoria"]] = cats.get(t["categoria"], 0) + 1
+
+    tasa_a_tiempo = len(a_tiempo) / len(con_limite) if con_limite else None
+    cumplimiento = min(1.0, len(completadas) / len(creadas)) if creadas else None
+    foco_vital = (sum(1 for t in completadas if t["prioridad"] in "AB") / len(completadas)) if completadas else None
+    ratio_est = (sum(t["tiempo_real_min"] for t in estimadas) / sum(t["estimado_min"] for t in estimadas)
+                 if estimadas else None)
+    precision = (1 - min(1.0, abs(ratio_est - 1))) if ratio_est is not None else None
+
+    componentes = [(tasa_a_tiempo, 0.4), (cumplimiento, 0.3), (foco_vital, 0.2), (precision, 0.1)]
+    disp = [(v, w) for v, w in componentes if v is not None]
+    puntaje = round(100 * sum(v * w for v, w in disp) / sum(w for _, w in disp)) if disp else None
+
+    def pct(x):
+        return round(100 * x, 1) if x is not None else None
+
+    return jsonify({
+        "dias": dias,
+        "desde": desde.date().isoformat(),
+        "creadas": len(creadas),
+        "completadas": len(completadas),
+        "canceladas": sum(1 for t in tareas if t["estado"] == "cancelada" and en_periodo(t["actualizada_en"])),
+        "abiertas": len(abiertas),
+        "vencidas_abiertas": sum(1 for t in abiertas if t["vencida"]),
+        "a_tiempo": len(a_tiempo),
+        "tarde": len(tarde),
+        "tasa_a_tiempo_pct": pct(tasa_a_tiempo),
+        "tasa_cumplimiento_pct": pct(cumplimiento),
+        "foco_vital_pct": pct(foco_vital),
+        "promedio_ciclo_horas": round(sum(ciclos) / len(ciclos), 1) if ciclos else None,
+        "promedio_atraso_dias": round(sum(t["dias_atraso"] for t in tarde) / len(tarde), 2) if tarde else None,
+        "ratio_real_vs_estimado": round(ratio_est, 2) if ratio_est is not None else None,
+        "minutos_foco": round(sum(foco_dia.values())),
+        "minutos_aprendizaje": round(sum(apr_dia.values())),
+        "reprogramaciones": reprogramaciones,
+        "subtareas_completadas": subs_hechas,
+        "ranas_completadas": sum(1 for t in completadas if t["es_rana"]),
+        "racha_dias": racha,
+        "puntaje": puntaje,
+        "serie": [{"fecha": k, "completadas": comp_dia[k], "minutos_foco": round(foco_dia[k]),
+                   "minutos_aprendizaje": round(apr_dia[k])} for k in serie],
+        "por_prioridad": por_prioridad,
+        "por_categoria": sorted(({"categoria": k, "completadas": v, "minutos_foco": round(foco_cat.get(k, 0))}
+                                 for k, v in cats.items()), key=lambda x: -x["completadas"]),
+    })
+
+
+# ───────────────────────── alertas ─────────────────────────
+@app.get("/api/alertas")
+def api_alertas():
+    ahora = datetime.now()
+    alertas = []
+    with db.conexion() as conn:
+        marcar_vencidas(conn)
+        tareas = listar_tareas(conn)
+        metas = listar_metas(conn)
+
+    for t in tareas:
+        if t["vencida"]:
+            alertas.append(dict(clave=f"vencida-{t['id']}-{t['fecha_limite']}", nivel="peligro",
+                                titulo="Tarea vencida", tarea_id=t["id"],
+                                mensaje=f"«{t['titulo']}» lleva {fmt_dur_dias(t['dias_atraso'])} de atraso."))
+        elif t["horas_restantes"] is not None and t["horas_restantes"] <= 24:
+            h = t["horas_restantes"]
+            cuando = f"en {round(h * 60)} min" if h < 1 else f"en {h:.0f} h"
+            alertas.append(dict(clave=f"pronto-{t['id']}-{t['fecha_limite']}", nivel="aviso",
+                                titulo="Vence pronto", tarea_id=t["id"],
+                                mensaje=f"«{t['titulo']}» vence {cuando}."))
+        if t["sesion_abierta"] and t["minutos_sesion_actual"] >= 90:
+            alertas.append(dict(clave=f"descanso-{t['id']}-{int(t['minutos_sesion_actual'] // 90)}",
+                                nivel="info", titulo="Toma un respiro", tarea_id=t["id"],
+                                mensaje=f"Llevas {t['minutos_sesion_actual']:.0f} min seguidos en «{t['titulo']}». "
+                                        "Una pausa de 10 min recarga tu foco."))
+    ranas = [t for t in tareas if t["es_rana"] and t["estado"] != "en_progreso"]
+    if ranas and ahora.hour >= 11:
+        alertas.append(dict(clave=f"rana-{date.today()}", nivel="aviso", titulo="Tu rana sigue esperando",
+                            tarea_id=ranas[0]["id"],
+                            mensaje=f"«{ranas[0]['titulo']}» es tu tarea más importante. Empieza con 10 minutos."))
+    for m in metas:
+        if m["estado"] != "activa":
+            continue
+        dr = m["dias_restantes"]
+        if dr is not None and dr < 0 and m["progreso_pct"] < 100:
+            alertas.append(dict(clave=f"meta-vencida-{m['id']}", nivel="peligro", titulo="Meta de aprendizaje vencida",
+                                meta_id=m["id"],
+                                mensaje=f"{m['herramienta']}: la fecha objetivo pasó con {m['progreso_pct']}% de avance."))
+        elif dr is not None and dr <= 14 and m["progreso_pct"] < 70:
+            alertas.append(dict(clave=f"meta-riesgo-{m['id']}-{date.today()}", nivel="aviso",
+                                titulo="Meta en riesgo", meta_id=m["id"],
+                                mensaje=f"{m['herramienta']}: quedan {dr} días y vas en {m['progreso_pct']}%."))
+        ult = m["ultima_practica"]
+        if not ult or (date.today() - date.fromisoformat(ult)).days >= 7:
+            alertas.append(dict(clave=f"meta-inactiva-{m['id']}-{date.today()}", nivel="info",
+                                titulo="Retoma tu aprendizaje", meta_id=m["id"],
+                                mensaje=f"No registras práctica de {m['herramienta']} hace 7 días o más."))
+    orden = {"peligro": 0, "aviso": 1, "info": 2}
+    alertas.sort(key=lambda a: orden[a["nivel"]])
+    return jsonify(alertas)
+
+
+# ───────────────────────── otros ─────────────────────────
+@app.get("/api/frase")
+def api_frase():
+    return jsonify(frase_aleatoria() if request.args.get("aleatoria") else frase_del_dia())
+
+
+@app.get("/api/historial")
+def api_historial():
+    limite = max(1, min(2000, int(request.args.get("limite", 300))))
+    with db.conexion() as conn:
+        filas = conn.execute(
+            "SELECT e.*, t.titulo, t.prioridad, t.categoria FROM eventos e "
+            "JOIN tareas t ON t.id = e.tarea_id ORDER BY e.momento DESC, e.id DESC LIMIT ?", (limite,))
+        return jsonify([dict(f) for f in filas])
+
+
+def _csv(nombre, filas, columnas):
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=columnas, delimiter=";", extrasaction="ignore")
+    w.writeheader()
+    w.writerows(filas)
+    return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={nombre}"})
+
+
+@app.get("/api/exportar/tareas.csv")
+def api_exportar_tareas():
+    with db.conexion() as conn:
+        filas = listar_tareas(conn, incluir_cerradas=True)
+    cols = ["id", "titulo", "prioridad", "categoria", "estado", "es_rana", "meta_nombre", "creada_en",
+            "iniciada_en", "completada_en", "fecha_limite", "estimado_min", "tiempo_real_min", "subtareas_total", "subtareas_hechas", "progreso_pct",
+            "ciclo_horas", "dias_atraso", "completada_a_tiempo"]
+    return _csv("tareas.csv", filas, cols)
+
+
+@app.get("/api/exportar/eventos.csv")
+def api_exportar_eventos():
+    with db.conexion() as conn:
+        filas = [dict(r) for r in conn.execute(
+            "SELECT e.*, t.titulo FROM eventos e JOIN tareas t ON t.id=e.tarea_id ORDER BY e.momento")]
+    return _csv("eventos.csv", filas,
+                ["id", "tarea_id", "titulo", "tipo", "estado_anterior", "estado_nuevo", "detalle", "momento"])
+
+
+@app.post("/api/respaldo")
+def api_respaldo():
+    ruta = db.respaldar()
+    return jsonify(ok=True, archivo=os.path.basename(ruta))
+
+
+@app.get("/")
+def index():
+    return send_from_directory(STATIC_DIR, "index.html")
+
+
+# ───────────────────────── arranque ─────────────────────────
+def main():
+    ap = argparse.ArgumentParser(description="Mi Foco — gestor local de tareas")
+    ap.add_argument("--puerto", type=int, default=int(os.environ.get("MIFOCO_PUERTO", 5050)))
+    ap.add_argument("--sin-navegador", action="store_true", help="No abrir el navegador al iniciar")
+    args = ap.parse_args()
+
+    db.init_db()
+    db.respaldo_diario()
+    url = f"http://127.0.0.1:{args.puerto}"
+    print(f"\n  ◎ Mi Foco corriendo en {url}\n  Base de datos: {db.DB_PATH}\n  Ctrl+C para detener.\n")
+    if not args.sin_navegador:
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+    try:
+        from waitress import serve
+        serve(app, host="127.0.0.1", port=args.puerto, threads=4)
+    except ImportError:
+        app.run(host="127.0.0.1", port=args.puerto, debug=False)
+
+
+db.init_db()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+# Datos personales: la base de datos y sus respaldos nunca se suben
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Entorno de Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Editor / sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

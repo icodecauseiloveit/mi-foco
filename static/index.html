@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mi Foco · Tareas y metas</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='none' stroke='%234f46e5' stroke-width='4'/><circle cx='16' cy='16' r='5' fill='%234f46e5'/></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="marca"><span class="logo"></span>Mi Foco</div>
+    <nav id="nav">
+      <button data-vista="hoy" class="activo"><span>☀</span>Hoy</button>
+      <button data-vista="tareas"><span>☰</span>Tareas</button>
+      <button data-vista="metas"><span>◆</span>Metas de aprendizaje</button>
+      <button data-vista="rendimiento"><span>▲</span>Rendimiento</button>
+      <button data-vista="historial"><span>⟲</span>Historial</button>
+    </nav>
+    <div class="sidebar-pie">
+      <button id="btn-catalogos" class="enlace">🏷 Categorías y descripciones</button>
+      <button id="btn-notif" class="enlace">🔔 Activar notificaciones</button>
+      <a class="enlace" href="/api/exportar/tareas.csv">⬇ Exportar tareas (CSV)</a>
+      <a class="enlace" href="/api/exportar/eventos.csv">⬇ Exportar historial (CSV)</a>
+      <button id="btn-respaldo" class="enlace">💾 Respaldar base de datos</button>
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div>
+        <h1 id="titulo-vista">Hoy</h1>
+        <p id="fecha-hoy" class="sutil"></p>
+      </div>
+      <div class="topbar-acciones">
+        <div id="en-curso" class="en-curso oculto"></div>
+        <button id="btn-alertas" class="btn-icono" title="Alertas">🔔<span id="badge-alertas" class="badge oculto">0</span></button>
+        <button id="btn-nueva" class="primario">+ Nueva tarea</button>
+      </div>
+    </header>
+    <section id="vista" class="vista"></section>
+  </main>
+
+  <div id="panel-alertas" class="panel-alertas oculto"></div>
+  <div id="modal" class="modal oculto"><div class="modal-caja" id="modal-caja"></div></div>
+  <div id="toasts" class="toasts"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

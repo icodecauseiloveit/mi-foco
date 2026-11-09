@@ -1,0 +1,87 @@
+# ◎ Mi Foco — gestor local de tareas, tiempo y metas de aprendizaje
+
+Servicio en Python (Flask + SQLite) que corre **100 % en tu equipo** y se usa desde el navegador en
+`http://127.0.0.1:5050`. Nada sale a internet: la interfaz no usa CDN ni librerías externas.
+
+## Arranque rápido
+
+**Windows:** doble clic en `iniciar.bat`. La primera vez crea un entorno virtual (`.venv`) e instala Flask y Waitress; luego abre el navegador.
+
+**Manual (cualquier sistema, Python 3.9+):**
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
+pip install -r requirements.txt
+python app.py                   # opciones: --puerto 8080  --sin-navegador
+```
+
+### Que arranque solo al encender el PC (Windows)
+1. Ejecuta `iniciar.bat` una vez (para crear `.venv`).
+2. `Win + R` → `shell:startup` → crea ahí un **acceso directo** a `iniciar_oculto.vbs`.
+3. Queda corriendo en segundo plano sin consola; abre `http://127.0.0.1:5050` cuando quieras
+   (te sugiero guardarlo como favorito o "instalarlo" como app desde el menú de Edge/Chrome).
+
+## Qué hace
+
+| Módulo | Funciones |
+|---|---|
+| **Hoy** | Frase del día (principio + práctica accionable), tu 🐸 *rana* del día, KPIs, captura rápida, tareas en curso, vencidas/por vencer y otras A. |
+| **Tareas** | CRUD completo, prioridad **ABCDE**, categoría, fecha límite, tiempo estimado, vínculo a una meta, filtros y búsqueda. Iniciar / pausar / completar / reabrir / cancelar. |
+| **Categorías y descripciones** | Se guardan solas en la base cada vez que las usas. Al crear una tarea eliges la categoría de una lista (o "＋ Nueva categoría…") y puedes cargar una descripción guardada. Desde *🏷 Categorías y descripciones* (barra lateral) agregas, renombras (actualiza todas sus tareas) o quitas. |
+| **Subtareas** | Al crear o editar una tarea agregas subtareas (Enter agrega otra; puedes pegar una lista). Cada una se marca por separado y la tarea muestra su avance (1 de 3 = 33 %). Cada marca queda en el historial con fecha y hora. Al completar la última te ofrece cerrar la tarea; si cierras la tarea con subtareas pendientes, te avisa cuáles faltan. |
+| **Cronómetro** | Cada *Iniciar → Pausar/Completar* crea una sesión de trabajo. **Una tarea a la vez**: al iniciar otra, la anterior se pausa sola. Si completas sin cronometrar te pregunta cuántos minutos le dedicaste. |
+| **Metas de aprendizaje** | Herramienta, nivel actual → objetivo (1‑5), horas objetivo, fecha, hitos con checklist y registro de práctica. El progreso combina horas y hitos; calcula el **ritmo semanal necesario**. Las horas de tareas vinculadas también suman. |
+| **Rendimiento** | Puntaje 0‑100, entregas a tiempo, atraso promedio, ciclo promedio, real vs. estimado, racha, foco en lo vital (80/20), reprogramaciones, gráficos diarios y por prioridad/categoría (7 a 365 días). |
+| **Historial** | Bitácora de cada evento: creada, iniciada, pausada, reanudada, reprogramada, venció, completada (a tiempo o con atraso), reabierta, cancelada, eliminada. |
+| **Alertas** | Vencidas, vencen en < 24 h, rana sin empezar después de las 11 a. m., sesión de más de 90 min (descanso), metas en riesgo o vencidas, metas sin práctica en 7 días. Notificaciones del sistema (actívalas en la barra lateral) y revisión cada minuto. |
+
+Atajo: tecla **N** abre "Nueva tarea".
+
+## Cómo se calculan las métricas
+
+- **Atraso** = momento de completar (o ahora, si sigue abierta) − fecha límite. Si la fecha límite no trae hora, se toma 23:59.
+- **Ciclo** = completada − creada.  **Tiempo real** = suma de sesiones cronometradas o manuales.
+- **Real vs. estimado** = Σ tiempo real / Σ estimado (> 1 = subestimas).
+- **Puntaje** = 40 % entregas a tiempo + 30 % cumplimiento (completadas / creadas en el periodo, máx. 100 %) + 20 % foco en lo vital (logros A o B) + 10 % precisión de estimación. Si un componente no tiene datos, se reparte su peso entre los demás.
+- **Racha** = días seguidos (hasta hoy o ayer) con al menos una tarea completada.
+
+## Datos y respaldos
+
+- Base SQLite en `data/mifoco.db` (cambia la ruta con la variable `MIFOCO_DB`).
+- Al iniciar se hace **un respaldo diario** en `data/respaldos/` (se conservan los últimos 15); también hay botón "Respaldar" en la interfaz.
+- Eliminar una tarea es **borrado lógico**: desaparece de las vistas pero su historial queda.
+- Exporta `tareas.csv` y `eventos.csv` (separador `;`, UTF‑8) desde la barra lateral, o conecta Power BI directamente al `.db` con el conector ODBC de SQLite.
+
+Tablas: `tareas`, `sesiones`, `eventos`, `subtareas`, `categorias`, `descripciones`, `metas`, `hitos_meta`, `registros_aprendizaje`.
+Si ya tenías datos, al arrancar la nueva versión las categorías y descripciones existentes se cargan solas en sus tablas.
+
+## API (por si quieres automatizar)
+
+```
+GET/POST        /api/tareas                 (?incluir_cerradas=1)
+GET/PUT/DELETE  /api/tareas/<id>
+POST            /api/tareas/<id>/accion     {"accion": "iniciar|pausar|completar|reabrir|cancelar", "minutos_manual": 30}
+GET             /api/catalogos   POST /api/categorias   PUT/DELETE /api/categorias/<id>
+POST            /api/descripciones           DELETE /api/descripciones/<id>
+GET/POST        /api/metas      PUT/DELETE /api/metas/<id>
+POST            /api/metas/<id>/hitos       PUT/DELETE /api/hitos/<id>
+POST            /api/metas/<id>/registros   DELETE /api/registros/<id>
+GET             /api/estadisticas?dias=30   /api/alertas   /api/frase   /api/historial
+GET             /api/exportar/tareas.csv    /api/exportar/eventos.csv
+POST            /api/tareas/<id>/subtareas   PUT/DELETE /api/subtareas/<id>   {"completada": true}
+POST            /api/respaldo
+```
+
+## Estructura
+
+```
+mi_foco/
+├── app.py          servidor y API
+├── db.py           esquema SQLite, conexión y respaldos
+├── frases.py       frases originales inspiradas en los principios de gestión del tiempo de Brian Tracy
+├── static/         index.html · style.css · app.js
+├── iniciar.bat · iniciar_oculto.vbs · iniciar.sh
+└── data/           (se crea solo) base de datos y respaldos
+```
+
+El servidor solo escucha en `127.0.0.1`, así que no es accesible desde otros equipos de la red.
