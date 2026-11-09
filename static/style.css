@@ -15,7 +15,9 @@
   --peligro-suave: #fee2e2;
   --info: #0284c7;
   --info-suave: #e0f2fe;
-  --pA: #dc2626; --pB: #ea580c; --pC: #2563eb; --pD: #7c3aed; --pE: #6b7280;
+  /* Prioridades ABCDE: escala de calor, de lo más urgente (rojo) a lo menos (gris) */
+  --pA: #c81e1e; --pB: #ea580c; --pC: #f59e0b; --pD: #fcd34d; --pE: #cbd5e1;
+  --pA-texto: #fff; --pB-texto: #fff; --pC-texto: #3b2304; --pD-texto: #3b2f04; --pE-texto: #334155;
   --sombra: 0 1px 2px rgba(20, 22, 40, .05), 0 4px 16px rgba(20, 22, 40, .06);
   --radio: 14px;
   --fuente: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -146,8 +148,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--acento); box-sha
 .r2 .t-cuerpo { flex-basis: calc(100% - 48px); }
 .r2 .t-acciones { width: 100%; justify-content: flex-start; padding-left: 48px; }
 .prio { flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-weight: 800; color: #fff; }
-.prio-A { background: var(--pA); } .prio-B { background: var(--pB); } .prio-C { background: var(--pC); }
-.prio-D { background: var(--pD); } .prio-E { background: var(--pE); }
+.prio-A { background: var(--pA); color: var(--pA-texto); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pA) 22%, transparent); }
+.prio-B { background: var(--pB); color: var(--pB-texto); } .prio-C { background: var(--pC); color: var(--pC-texto); }
+.prio-D { background: var(--pD); color: var(--pD-texto); } .prio-E { background: var(--pE); color: var(--pE-texto); }
 .t-cuerpo { flex: 1; min-width: 0; }
 .t-titulo { font-weight: 600; cursor: pointer; }
 .t-titulo:hover { color: var(--acento); }
