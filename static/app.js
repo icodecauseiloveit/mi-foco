@@ -617,6 +617,8 @@ async function render() {
   $('#titulo-vista').textContent = titulo;
   $$('#nav button').forEach((b) => b.classList.toggle('activo', b.dataset.vista === st.vista));
   document.body.classList.toggle('modo-pantalla', st.vista === 'hoy');
+  // En Metas de aprendizaje solo se ofrece «+ Nueva meta» (dentro de la vista).
+  $('#btn-nueva').classList.toggle('oculto', st.vista === 'metas');
   try {
     $('#vista').innerHTML = await fn();
   } catch (e) {
@@ -1307,7 +1309,10 @@ document.addEventListener('paste', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { cerrarModal(); $('#panel-alertas').classList.add('oculto'); }
   const enCampo = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
-  if (!enCampo && e.key.toLowerCase() === 'n' && $('#modal').classList.contains('oculto')) { e.preventDefault(); formTarea(); }
+  if (!enCampo && e.key.toLowerCase() === 'n' && $('#modal').classList.contains('oculto')) {
+    e.preventDefault();
+    if (st.vista === 'metas') formMeta(); else formTarea();
+  }
 });
 $('#btn-nueva').addEventListener('click', () => formTarea());
 $('#btn-catalogos').addEventListener('click', () => gestionarCatalogos());
