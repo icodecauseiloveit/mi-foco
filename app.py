@@ -803,6 +803,19 @@ def api_editar_subtarea(sid):
             etiqueta = "📦 Entregable " if s["es_entregable"] else ""
             registrar_evento(conn, tid, "subtarea_completada" if hecha else "subtarea_reabierta", None, None,
                              f"{'✓' if hecha else '↺'} {etiqueta}«{s['titulo']}» · avance {avance_texto(conn, tid)}")
+        # Corregir la fecha de completado (por si se terminó antes de marcarla)
+        if d.get("completada_en"):
+            fila = conn.execute("SELECT completada, completada_en FROM subtareas WHERE id=?", (sid,)).fetchone()
+            if not fila["completada"]:
+                raise ValueError("Solo se puede cambiar la fecha de una subtarea completada.")
+            nueva = fecha_completado(d["completada_en"])
+            if nueva[:16] != (fila["completada_en"] or "")[:16]:
+                conn.execute("UPDATE subtareas SET completada_en=? WHERE id=?", (nueva, sid))
+                conn.execute("UPDATE tareas SET iniciada_en=CASE WHEN iniciada_en IS NULL OR iniciada_en > ? THEN ? "
+                             "ELSE iniciada_en END, actualizada_en=? WHERE id=?", (nueva, nueva, ahora, tid))
+                registrar_evento(conn, tid, "editada", None, None,
+                                 f"Fecha de la subtarea «{s['titulo']}»: "
+                                 f"{(fila['completada_en'] or '—').replace('T', ' ')[:16]} → {nueva.replace('T', ' ')[:16]}")
         res = obtener_tarea(conn, tid)
         res["desbloqueadas"] = registrar_cambios_bloqueo(
             conn, antes, f"{'se completó' if d.get('completada') else 'se desmarcó'} la subtarea «{s['titulo']}»")

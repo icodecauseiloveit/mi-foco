@@ -218,7 +218,7 @@ function checklistSubtareas(t, conAgregar = true) {
   return `<ul class="subtareas">${t.subtareas.map((s) => `<li class="${s.completada ? 'hecha' : ''} ${s.es_entregable ? 'entregable' : ''}">
       <label><input type="checkbox" data-subtarea="${s.id}" data-tarea="${t.id}" ${s.completada ? 'checked' : ''} ${t.estado === 'cancelada' ? 'disabled' : ''}>
       <span>${s.es_entregable ? '<em class="tag-entregable">📦 Entregable</em> ' : ''}${esc(s.titulo)}</span></label>
-      ${s.completada && s.completada_en ? `<small>${fmtFecha(s.completada_en)}</small>` : ''}</li>`).join('')}</ul>
+      ${s.completada && s.completada_en ? `<button type="button" class="fecha-sub" data-fecha-subtarea="${s.id}" data-tarea="${t.id}" title="Cambiar la fecha en que se completó">✅ ${fmtFecha(s.completada_en)} <span class="lapiz">✎</span></button>` : ''}</li>`).join('')}</ul>
     ${conAgregar && abierta(t) ? `<form class="f-subtarea" data-tarea="${t.id}"><input name="titulo" placeholder="+ Agregar subtarea y Enter" autocomplete="off"></form>` : ''}`;
 }
 
@@ -779,12 +779,12 @@ async function gestionarCatalogos(pestana = 'categorias') {
     <div class="botones"><button class="secundario" data-cerrar>Cerrar</button></div>`);
 }
 
-function formFechaCompletado(t, desdeDetalle = false) {
-  const actual = new Date(t.completada_en);
+function formFechaCompletado(t, desdeDetalle = false, sub = null) {
+  const actual = new Date(sub ? sub.completada_en : t.completada_en);
   const conDias = (n) => { const d = new Date(actual); const hoy = new Date(); d.setFullYear(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - n); return aLocalInput(d > hoy ? hoy : d); };
   abrirModal(`<h2>✅ Fecha de completado</h2>
-    <p class="sutil" style="margin-bottom:12px">«${esc(t.titulo)}»${t.fecha_limite ? ` · fecha límite ${fmtFecha(t.fecha_limite)}` : ''}</p>
-    <form id="f-fecha-comp" data-id="${t.id}" ${desdeDetalle ? 'data-desde-detalle' : ''}>
+    <p class="sutil" style="margin-bottom:12px">${sub ? `Subtarea «${esc(sub.titulo)}» de «${esc(t.titulo)}»` : `«${esc(t.titulo)}»${t.fecha_limite ? ` · fecha límite ${fmtFecha(t.fecha_limite)}` : ''}`}</p>
+    <form id="f-fecha-comp" data-id="${t.id}" ${sub ? `data-subtarea="${sub.id}"` : ''} ${desdeDetalle ? 'data-desde-detalle' : ''}>
       <label>¿Cuándo la terminaste?
         <input type="datetime-local" name="completada_en" value="${aLocalInput(actual)}" max="${aLocalInput(new Date())}" required></label>
       <div class="atajos-fecha">
@@ -793,7 +793,7 @@ function formFechaCompletado(t, desdeDetalle = false) {
         <button type="button" class="mini" data-fijar-fecha="${conDias(2)}">Hace 2 días</button>
         <button type="button" class="mini" data-fijar-fecha="${conDias(7)}">Hace una semana</button>
       </div>
-      <p class="ayuda">Se conserva la hora; ajústala si hace falta. Se recalcula si fue a tiempo y queda en el historial.</p>
+      <p class="ayuda">Se conserva la hora; ajústala si hace falta. ${sub ? 'El cambio' : 'Se recalcula si fue a tiempo y el cambio'} queda en el historial.</p>
       <div class="botones"><button type="button" class="secundario" data-cerrar>Cancelar</button><button class="primario">Guardar fecha</button></div>
     </form>`);
 }
@@ -926,6 +926,12 @@ document.addEventListener('submit', async (e) => {
       await render();
       const otra = enModal ? $('#modal-caja .f-subtarea input') : $(`#vista .f-subtarea[data-tarea="${t.id}"] input`);
       if (otra) otra.focus();
+    } else if (f.id === 'f-fecha-comp' && f.dataset.subtarea) {
+      const r = await api(`/api/subtareas/${f.dataset.subtarea}`, { method: 'PUT', body: { completada_en: f.completada_en.value } });
+      const sub = r.subtareas.find((x) => x.id === Number(f.dataset.subtarea));
+      toast(`Subtarea «${sub.titulo}» completada el ${fmtFecha(sub.completada_en)}`, 'exito');
+      if (f.dataset.desdeDetalle !== undefined) await verDetalle(r.id); else cerrarModal();
+      await refrescar();
     } else if (f.id === 'f-fecha-comp') {
       const r = await api(`/api/tareas/${f.dataset.id}`, { method: 'PUT', body: { completada_en: f.completada_en.value } });
       const plazo = r.completada_a_tiempo === true ? ' · a tiempo ✓' : r.completada_a_tiempo === false ? ` · ${fmtDias(r.dias_atraso)} de atraso` : '';
@@ -1008,6 +1014,11 @@ document.addEventListener('click', async (e) => {
       const id = Number(d.fechaCompletado);
       const t = st.tareas.find((x) => x.id === id) || await api(`/api/tareas/${id}`);
       return formFechaCompletado(t, d.desdeDetalle !== undefined);
+    }
+    if (d.fechaSubtarea) {
+      const t = await api(`/api/tareas/${d.tarea}`);
+      const sub = t.subtareas.find((x) => x.id === Number(d.fechaSubtarea));
+      return formFechaCompletado(t, !!el.closest('[data-detalle-subs]'), sub);
     }
     if (d.fijarFecha) { el.closest('form').completada_en.value = d.fijarFecha; return; }
     if (d.editarIcono) return formIconoCategoria(st.catalogos.categorias.find((c) => c.id === Number(d.editarIcono)));
