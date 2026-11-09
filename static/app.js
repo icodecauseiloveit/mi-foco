@@ -27,7 +27,8 @@ const st = {
   metas: [],
   catalogos: { categorias: [], descripciones: [] },
   subInvertidas: new Set(),
-  subHoy: new Set(),          // en Hoy van plegadas; aquí las que el usuario abrió   // tareas cuya lista de subtareas el usuario abrió/cerró a mano
+  subHoy: new Set(),
+  hist: { tab: 'semana', anio: null, semana: null },          // en Hoy van plegadas; aquí las que el usuario abrió   // tareas cuya lista de subtareas el usuario abrió/cerró a mano
   filtros: { estado: 'abiertas', prioridad: '', categoria: '', q: '' },
   periodo: 30,
   alertas: [],
@@ -591,6 +592,14 @@ async function vistaRendimiento() {
 }
 
 async function vistaHistorial() {
+  const pestanas = `<div class="pestanas" role="tablist">
+      <button role="tab" class="${st.hist.tab === 'semana' ? 'activo' : ''}" data-hist-tab="semana">📅 Reporte semanal</button>
+      <button role="tab" class="${st.hist.tab === 'bitacora' ? 'activo' : ''}" data-hist-tab="bitacora">📜 Bitácora de eventos</button>
+    </div>`;
+  return pestanas + (st.hist.tab === 'semana' ? await vistaSemana() : await vistaBitacora());
+}
+
+async function vistaBitacora() {
   const eventos = await api('/api/historial?limite=400');
   if (!eventos.length) return '<div class="tarjeta vacio">Todavía no hay movimientos.</div>';
   return `<div class="tarjeta tabla-scroll"><table>
@@ -602,6 +611,84 @@ async function vistaHistorial() {
       <td>${EVENTOS[e.tipo] || esc(e.tipo)}</td>
       <td class="sutil">${e.estado_anterior && e.estado_nuevo && e.estado_anterior !== e.estado_nuevo ? `${ESTADOS[e.estado_anterior] || e.estado_anterior} → ${ESTADOS[e.estado_nuevo] || e.estado_nuevo}` : ''}</td>
       <td class="sutil">${esc(e.detalle || '')}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+/* ─────────── Reporte semanal día por día ─────────── */
+const fechaDia = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('es-CO', { day: 'numeric', month: 'long' });
+const textoRangoSemana = (s) => {
+  const a = new Date(s.desde + 'T00:00:00'), b = new Date(s.hasta + 'T00:00:00');
+  const anioFin = b.getFullYear();
+  return a.getFullYear() !== anioFin
+    ? `lunes ${fechaDia(s.desde)} de ${a.getFullYear()} al domingo ${fechaDia(s.hasta)} de ${anioFin}`
+    : `lunes ${fechaDia(s.desde)} al domingo ${fechaDia(s.hasta)} de ${anioFin}`;
+};
+const enlaceTarea = (t) => `<span class="prio prio-${t.prioridad} prio-mini">${t.prioridad}</span><a href="#" data-detalle="${t.id}">${esc(t.titulo)}</a>`;
+
+function tarjetaDia(d) {
+  const etiquetas = [];
+  if (d.hoy) etiquetas.push('<span class="chip azul">Hoy</span>');
+  if (d.festivo) etiquetas.push(`<span class="chip festivo">🎉 Festivo · ${esc(d.festivo)}</span>`);
+  else if (d.fin_de_semana) etiquetas.push('<span class="chip">Fin de semana</span>');
+  const nTotal = d.completadas.length + d.subtareas.length + d.trabajadas.length + d.comentarios.length + d.practica.length;
+  const cifras = [];
+  if (d.completadas.length) cifras.push(`<b>${d.completadas.length}</b> completada${d.completadas.length === 1 ? '' : 's'}`);
+  if (d.subtareas.length) cifras.push(`<b>${d.subtareas.length}</b> subtarea${d.subtareas.length === 1 ? '' : 's'}`);
+  if (d.minutos_foco) cifras.push(`<b>${fmtMin(d.minutos_foco)}</b> de foco`);
+  if (d.minutos_practica) cifras.push(`<b>${fmtMin(d.minutos_practica)}</b> de práctica`);
+
+  const seccion = (titulo, items) => (items.length ? `<div class="dia-sec"><h4>${titulo}</h4><ul>${items.join('')}</ul></div>` : '');
+  const cuerpo = nTotal ? [
+    seccion('✅ Tareas completadas', d.completadas.map((t) => `<li>${enlaceTarea(t)}
+      <span class="chip ${t.a_tiempo === false ? 'rojo' : t.a_tiempo ? 'verde' : ''}">${t.a_tiempo === false ? `con ${fmtDias(t.dias_atraso)} de atraso` : t.a_tiempo ? 'a tiempo' : 'sin fecha límite'}</span>
+      <small>${esc(t.hora)}${t.entregable ? ` · 📦 ${esc(t.entregable)}` : ''}</small></li>`)),
+    seccion('☑ Subtareas completadas', d.subtareas.map((s) => `<li>${s.es_entregable ? '📦 ' : ''}${esc(s.titulo)}
+      <small>de ${enlaceTarea(s.tarea)} · ${esc(s.hora)}</small></li>`)),
+    seccion('⏱ Tiempo trabajado', d.trabajadas.map((t) => `<li>${enlaceTarea(t)} <span class="chip">${fmtMin(t.minutos)}</span></li>`)),
+    seccion('💬 Comentarios', d.comentarios.map((c) => `<li><span class="coment-dia">${esc(c.texto)}</span>
+      <small>en ${enlaceTarea(c.tarea)} · ${esc(c.hora)}</small></li>`)),
+    seccion('📚 Aprendizaje', d.practica.map((p) => `<li>${esc(p.meta)} <span class="chip">${fmtMin(p.minutos)}</span>${p.nota ? ` <small>${esc(p.nota)}</small>` : ''}</li>`)),
+  ].join('') : `<div class="dia-vacio">${d.futuro ? 'Aún no llega' : d.festivo ? '🎉 Día festivo · sin actividad' : d.fin_de_semana ? 'Fin de semana · sin actividad' : 'Sin actividad registrada'}</div>`;
+
+  return `<section class="tarjeta dia ${d.festivo ? 'es-festivo' : ''} ${d.fin_de_semana ? 'es-finde' : ''} ${d.hoy ? 'es-hoy' : ''} ${d.futuro ? 'es-futuro' : ''}">
+    <header class="dia-cab">
+      <div><b>${d.dia_semana}</b> <span class="sutil">${fechaDia(d.fecha)}</span> ${etiquetas.join(' ')}</div>
+      <div class="dia-cifras">${cifras.join(' · ')}</div>
+    </header>
+    ${cuerpo}
+  </section>`;
+}
+
+async function vistaSemana() {
+  const q = st.hist.anio ? `?anio=${st.hist.anio}&semana=${st.hist.semana}` : '';
+  const s = await api(`/api/semana${q}`);
+  st.hist.anio = s.anio; st.hist.semana = s.semana;
+  const r = s.resumen;
+  const anioActual = new Date().getFullYear();
+  const anios = [];
+  for (let a = anioActual - 3; a <= anioActual + 1; a++) anios.push(a);
+  const fuente = { api: 'consultados en línea (Nager.Date)', guardado: 'de la API, guardados', calculado: 'calculados localmente (sin conexión a la API)' }[s.festivos_fuente];
+  return `
+    <div class="semana-filtros">
+      <button class="mini" data-semana-ir="${s.anterior.anio}-${s.anterior.semana}" title="Semana anterior">‹</button>
+      <label class="semana-sel">Semana
+        <input type="number" id="h-semana" min="1" max="${s.semanas_del_anio}" value="${s.semana}"></label>
+      <label class="semana-sel">Año
+        <select id="h-anio">${anios.map((a) => `<option ${a === s.anio ? 'selected' : ''}>${a}</option>`).join('')}</select></label>
+      <button class="mini" data-semana-ir="${s.siguiente.anio}-${s.siguiente.semana}" title="Semana siguiente">›</button>
+      ${s.es_actual ? '<span class="chip azul">semana actual</span>' : '<button class="mini" data-semana-ir="hoy">Esta semana</button>'}
+      <div class="semana-rango"><b>Semana ${s.semana}</b> · del ${textoRangoSemana(s)}</div>
+    </div>
+
+    <div class="rejilla r4 semana-kpis">
+      ${kpi(r.completadas, 'Tareas completadas', r.completadas ? `${r.a_tiempo} a tiempo · ${r.subtareas} subtareas` : `${r.subtareas} subtareas`, 'verde')}
+      ${kpi(fmtMin(r.minutos_foco), 'Tiempo de foco', r.minutos_practica ? `+ ${fmtMin(r.minutos_practica)} de práctica` : '', 'azul')}
+      ${kpi(`${r.dias_habiles} <small class="kpi-sub">de 5</small>`, 'Días hábiles', s.festivos_semana.length ? `🎉 ${s.festivos_semana.map((f) => esc(f.nombre)).join(', ')}` : 'sin festivos esta semana')}
+      ${kpi(r.promedio_por_dia_habil ?? '—', 'Completadas por día hábil', `${r.dias_con_actividad} día(s) con actividad`)}
+    </div>
+
+    <div class="dias">${s.dias.map(tarjetaDia).join('')}</div>
+    <p class="sutil fuente-festivos">Festivos de Colombia ${fuente}.
+      ${s.festivos_fuente === 'calculado' ? `<button class="enlace" data-festivos-actualizar="${s.anio}">Reintentar consulta en línea</button>` : ''}</p>`;
 }
 
 const VISTAS = {
@@ -1102,6 +1189,17 @@ document.addEventListener('click', async (e) => {
     }
     if (d.borrarHito) { await api(`/api/hitos/${d.borrarHito}`, { method: 'DELETE' }); return render(); }
     if (d.tabCatalogo) return gestionarCatalogos(d.tabCatalogo);
+    if (d.histTab) { st.hist.tab = d.histTab; return render(); }
+    if (d.semanaIr) {
+      if (d.semanaIr === 'hoy') { st.hist.anio = null; st.hist.semana = null; }
+      else { const [a, w] = d.semanaIr.split('-').map(Number); st.hist.anio = a; st.hist.semana = w; }
+      return render();
+    }
+    if (d.festivosActualizar) {
+      const r = await api(`/api/festivos/${d.festivosActualizar}/actualizar`, { method: 'POST' });
+      toast(r.fuente === 'api' ? `🎉 Festivos ${r.anio} actualizados desde la API` : 'No se pudo conectar con la API de festivos; se siguen usando los calculados.', r.fuente === 'api' ? 'exito' : '');
+      return render();
+    }
     if (d.fechaCompletado) {
       const id = Number(d.fechaCompletado);
       const t = st.tareas.find((x) => x.id === id) || await api(`/api/tareas/${id}`);
@@ -1253,6 +1351,10 @@ document.addEventListener('change', async (e) => {
   }
   const mapa = { 'f-estado': 'estado', 'f-prioridad': 'prioridad', 'f-categoria': 'categoria' };
   if (mapa[el.id]) { st.filtros[mapa[el.id]] = el.value; pintarListaTareas(); }
+  if (el.id === 'h-semana' || el.id === 'h-anio') {
+    const w = Number($('#h-semana').value), a = Number($('#h-anio').value);
+    if (w >= 1 && w <= 53) { st.hist.anio = a; st.hist.semana = w; render().catch(() => {}); }
+  }
   if (el.id === 'f-periodo') { st.periodo = Number(el.value); render(); }
 });
 document.addEventListener('input', (e) => {

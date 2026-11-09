@@ -141,6 +141,14 @@ CREATE TABLE IF NOT EXISTS adjuntos (
 );
 CREATE INDEX IF NOT EXISTS ix_adjuntos_tarea ON adjuntos(tarea_id);
 
+-- Festivos de Colombia obtenidos de la API (caché por año).
+CREATE TABLE IF NOT EXISTS festivos (
+    fecha   TEXT PRIMARY KEY,
+    anio    INTEGER NOT NULL,
+    nombre  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_festivos_anio ON festivos(anio);
+
 -- Catálogos reutilizables al crear tareas.
 CREATE TABLE IF NOT EXISTS categorias (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

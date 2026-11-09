@@ -38,7 +38,7 @@ python app.py                   # opciones: --puerto 8080  --sin-navegador
 | **Cronómetro** | Cada *Iniciar → Pausar/Completar* crea una sesión de trabajo. **Una tarea a la vez**: al iniciar otra, la anterior se pausa sola. Si completas sin cronometrar te pregunta cuántos minutos le dedicaste. |
 | **Metas de aprendizaje** | Herramienta, nivel actual → objetivo (1‑5), horas objetivo, fecha, hitos con checklist y registro de práctica. El progreso combina horas y hitos; calcula el **ritmo semanal necesario**. Las horas de tareas vinculadas también suman. |
 | **Rendimiento** | Puntaje 0‑100, entregas a tiempo, atraso promedio, ciclo promedio, real vs. estimado, racha, foco en lo vital (80/20), reprogramaciones, gráficos diarios y por prioridad/categoría (7 a 365 días). |
-| **Historial** | Bitácora de cada evento: creada, iniciada, pausada, reanudada, reprogramada, venció, completada (a tiempo o con atraso), reabierta, cancelada, eliminada. |
+| **Historial** | Dos pestañas. *📅 Reporte semanal*: eliges el número de semana (ISO, p. ej. 46) y el año, o navegas con ‹ ›; muestra de qué día a qué día va (lunes a domingo), los **festivos de Colombia** y, **día por día**, las tareas completadas (a tiempo o con atraso), subtareas completadas, tiempo trabajado por tarea, comentarios y práctica de aprendizaje, con un resumen de la semana (días hábiles, completadas por día hábil). *📜 Bitácora de eventos*: el registro de todo lo que le pasó a cada tarea. |
 | **Alertas** | Vencidas, vencen en < 24 h, rana sin empezar después de las 11 a. m., sesión de más de 90 min (descanso), metas en riesgo o vencidas, metas sin práctica en 7 días. Notificaciones del sistema (actívalas en la barra lateral) y revisión cada minuto. |
 
 Atajo: tecla **N** abre "Nueva tarea".
@@ -51,6 +51,10 @@ Atajo: tecla **N** abre "Nueva tarea".
 - **Puntaje** = 40 % entregas a tiempo + 30 % cumplimiento (completadas / creadas en el periodo, máx. 100 %) + 20 % foco en lo vital (logros A o B) + 10 % precisión de estimación. Si un componente no tiene datos, se reparte su peso entre los demás.
 - **Racha** = días seguidos (hasta hoy o ayer) con al menos una tarea completada.
 
+## Festivos
+
+Los festivos de Colombia se consultan en la API pública [Nager.Date](https://date.nager.at) (`/api/v3/PublicHolidays/{año}/CO`, sin clave) y se guardan en la base para no volver a consultarla. Si la red no permite llegar a la API, se calculan localmente con la Ley Emiliani y las fechas de Semana Santa (verificado contra el calendario oficial 2025 y 2026); en el reporte semanal aparece *Reintentar consulta en línea*.
+
 ## Datos y respaldos
 
 - Base SQLite en `data/mifoco.db` (cambia la ruta con la variable `MIFOCO_DB`).
@@ -59,7 +63,7 @@ Atajo: tecla **N** abre "Nueva tarea".
 - Eliminar una tarea es **borrado lógico**: desaparece de las vistas pero su historial queda.
 - Exporta `tareas.csv` y `eventos.csv` (separador `;`, UTF‑8) desde la barra lateral, o conecta Power BI directamente al `.db` con el conector ODBC de SQLite.
 
-Tablas: `tareas`, `sesiones`, `eventos`, `subtareas`, `dependencias`, `comentarios`, `adjuntos`, `categorias`, `descripciones`, `metas`, `hitos_meta`, `registros_aprendizaje`.
+Tablas: `tareas`, `sesiones`, `eventos`, `subtareas`, `dependencias`, `comentarios`, `adjuntos`, `festivos`, `categorias`, `descripciones`, `metas`, `hitos_meta`, `registros_aprendizaje`.
 Si ya tenías datos, al arrancar la nueva versión las categorías y descripciones existentes se cargan solas en sus tablas.
 
 ## API (por si quieres automatizar)
@@ -81,6 +85,7 @@ POST            /api/tareas/<id>/subtareas   PUT/DELETE /api/subtareas/<id>   {"
 POST/PUT        /api/tareas  {"dependencias": [{"tipo": "tarea"|"subtarea", "id": 7}]}   DELETE /api/dependencias/<id>
 POST            /api/tareas/<id>/adjuntos  (multipart «archivo» o JSON {url, nombre})   GET /api/adjuntos/<id>/archivo   DELETE /api/adjuntos/<id>
 POST            /api/tareas/<id>/comentarios   PUT/DELETE /api/comentarios/<id>
+GET             /api/semana?anio=2026&semana=46   POST /api/festivos/<año>/actualizar
 POST            /api/respaldo
 ```
 
@@ -90,6 +95,7 @@ POST            /api/respaldo
 mi_foco/
 ├── app.py          servidor y API
 ├── db.py           esquema SQLite, conexión y respaldos
+├── festivos.py     festivos de Colombia (API Nager.Date + cálculo local de respaldo)
 ├── frases.py       frases originales inspiradas en los principios de gestión del tiempo de Brian Tracy
 ├── static/         index.html · style.css · app.js · reporte.js (imagen del reporte)
 ├── iniciar.bat · iniciar_oculto.vbs · iniciar.sh

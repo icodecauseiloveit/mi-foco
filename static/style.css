@@ -465,3 +465,44 @@ ul.adjuntos .ico { text-decoration: none; }
 .f-enlace input[name="url"] { flex: 2 1 240px; }
 .f-enlace input[name="nombre"] { flex: 1 1 140px; }
 .timeline li.ev-adjunto::before { border-color: var(--acento); width: 9px; height: 9px; left: -23px; }
+
+/* ───────── Historial: pestañas y reporte semanal ───────── */
+.pestanas { display: flex; gap: 4px; border-bottom: 1px solid var(--borde); margin-bottom: 16px; }
+.pestanas button { border: 0; background: none; padding: 10px 16px; font-weight: 600; color: var(--sutil); cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.pestanas button:hover { color: var(--texto); }
+.pestanas button.activo { color: var(--acento); border-bottom-color: var(--acento); }
+
+.semana-filtros { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.semana-filtros .mini { font-size: 1rem; padding: 5px 11px; }
+.semana-sel { display: flex !important; flex-direction: row !important; align-items: center; gap: 6px; margin: 0 !important; font-weight: 600; color: var(--sutil); }
+.semana-sel input { width: 76px; padding: 6px 8px; font-weight: 700; color: var(--texto); }
+.semana-sel select { width: auto; padding: 6px 8px; }
+.semana-rango { margin-left: auto; font-size: .95rem; }
+.semana-rango b { color: var(--acento); }
+.semana-kpis { margin-bottom: 16px; }
+.kpi-sub { font-size: .9rem; color: var(--sutil); font-weight: 600; }
+
+.dias { display: flex; flex-direction: column; gap: 10px; }
+.dia { padding: 12px 16px; border-left: 4px solid var(--acento); }
+.dia.es-finde { border-left-color: var(--borde); background: var(--superficie-2); }
+.dia.es-festivo { border-left-color: #f59e0b; background: color-mix(in srgb, #f59e0b 7%, var(--superficie)); }
+.dia.es-hoy { box-shadow: 0 0 0 2px var(--acento-suave), var(--sombra); }
+.dia.es-futuro { opacity: .6; }
+.dia-cab { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dia-cab b { font-size: 1rem; }
+.dia-cifras { font-size: .82rem; color: var(--sutil); }
+.dia-cifras b { color: var(--texto); }
+.chip.festivo { background: #fef3c7; color: #92400e; border-color: transparent; font-weight: 600; }
+.dia-vacio { color: var(--sutil); font-size: .85rem; margin-top: 6px; }
+.dia-sec { margin-top: 10px; }
+.dia-sec h4 { margin: 0 0 4px; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--sutil); }
+.dia-sec ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.dia-sec li { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: .9rem; padding: 3px 0; }
+.dia-sec li a { color: var(--texto); text-decoration: none; font-weight: 500; }
+.dia-sec li a:hover { color: var(--acento); text-decoration: underline; }
+.dia-sec small { color: var(--sutil); display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.prio-mini { display: inline-grid !important; width: 20px !important; height: 20px !important; font-size: .68rem; border-radius: 5px !important; }
+.coment-dia { white-space: pre-wrap; font-style: italic; flex-basis: 100%; }
+.fuente-festivos { margin-top: 14px !important; font-size: .8rem; }
+.fuente-festivos .enlace { display: inline; padding: 0 4px; text-decoration: underline; }
+@media (max-width: 820px) { .semana-rango { margin-left: 0; flex-basis: 100%; } }

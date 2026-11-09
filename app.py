@@ -21,6 +21,7 @@ from flask import Flask, Response, abort, jsonify, request, send_file, send_from
 from werkzeug.exceptions import HTTPException
 
 import db
+import festivos as festivos_co
 from frases import frase_aleatoria, frase_del_dia
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1593,6 +1594,135 @@ def api_reporte():
         },
         "actividades": actividades,
     })
+
+
+# ───────────────────────── reporte semanal (historial) ─────────────────────────
+DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+
+@app.get("/api/semana")
+def api_semana():
+    """Actividades hechas día por día en la semana ISO ?anio=2026&semana=46 (por defecto, la actual).
+    Marca festivos de Colombia (API Nager.Date, guardados; o calculados si no hay conexión)."""
+    hoy = date.today()
+    anio_hoy, semana_hoy, _ = hoy.isocalendar()
+    try:
+        anio = int(request.args.get("anio") or anio_hoy)
+        semana = int(request.args.get("semana") or (semana_hoy if anio == anio_hoy else 1))
+        lunes = date.fromisocalendar(anio, semana, 1)
+    except ValueError:
+        semanas = date(int(request.args.get("anio") or anio_hoy), 12, 28).isocalendar()[1]
+        raise ValueError(f"Semana inválida: el año tiene semanas de 1 a {semanas}.")
+    dias = [lunes + timedelta(days=i) for i in range(7)]
+    d0 = datetime.combine(dias[0], datetime.min.time())
+    d1 = datetime.combine(dias[-1] + timedelta(days=1), datetime.min.time())
+    rango = (d0.isoformat(timespec="seconds"), d1.isoformat(timespec="seconds"))
+
+    with db.conexion() as conn:
+        # Una semana puede cruzar de año (p. ej. 29 dic – 4 ene): se piden los festivos de ambos.
+        fest, fuentes = {}, set()
+        for a in sorted({d.year for d in dias}):
+            f, fuente = festivos_co.obtener(conn, a)
+            fest.update(f)
+            fuentes.add(fuente)
+        tareas = {t["id"]: t for t in listar_tareas(conn, incluir_cerradas=True)}
+        subtareas = conn.execute(
+            "SELECT s.titulo, s.completada_en, s.es_entregable, s.tarea_id, t.completada_en AS t_fin "
+            "FROM subtareas s JOIN tareas t ON t.id=s.tarea_id "
+            "WHERE t.eliminada=0 AND s.completada=1 AND s.completada_en >= ? AND s.completada_en < ?", rango).fetchall()
+        sesiones = conn.execute(
+            "SELECT s.tarea_id, s.inicio, s.fin, s.minutos FROM sesiones s JOIN tareas t ON t.id=s.tarea_id "
+            "WHERE t.eliminada=0 AND s.inicio >= ? AND s.inicio < ?", rango).fetchall()
+        comentarios = conn.execute(
+            "SELECT c.tarea_id, c.texto, c.creado_en FROM comentarios c JOIN tareas t ON t.id=c.tarea_id "
+            "WHERE t.eliminada=0 AND c.creado_en >= ? AND c.creado_en < ? ORDER BY c.creado_en", rango).fetchall()
+        practica = conn.execute(
+            "SELECT r.fecha, r.minutos, r.nota, m.herramienta FROM registros_aprendizaje r JOIN metas m ON m.id=r.meta_id "
+            "WHERE r.fecha >= ? AND r.fecha <= ?", (dias[0].isoformat(), dias[-1].isoformat())).fetchall()
+
+    ahora = datetime.now()
+    por_dia = {d.isoformat(): {"completadas": [], "subtareas": [], "trabajadas": {}, "comentarios": [], "practica": []}
+               for d in dias}
+    breve = lambda t: {"id": t["id"], "titulo": t["titulo"], "prioridad": t["prioridad"], "categoria": t["categoria"]}
+
+    for t in tareas.values():
+        if t["estado"] == "completada" and t["completada_en"] and t["completada_en"][:10] in por_dia:
+            por_dia[t["completada_en"][:10]]["completadas"].append({
+                **breve(t), "hora": t["completada_en"][11:16], "a_tiempo": t["completada_a_tiempo"],
+                "dias_atraso": t["dias_atraso"], "entregable": t["entregable"]})
+    for s in subtareas:
+        if s["t_fin"] and s["t_fin"] == s["completada_en"]:
+            continue  # se cerró junto con su tarea: ya aparece como tarea completada
+        t = tareas.get(s["tarea_id"])
+        if t:
+            por_dia[s["completada_en"][:10]]["subtareas"].append({
+                "titulo": s["titulo"], "es_entregable": bool(s["es_entregable"]), "hora": s["completada_en"][11:16],
+                "tarea": breve(t)})
+    for s in sesiones:
+        ini = parse_dt(s["inicio"])
+        m = s["minutos"] if s["minutos"] is not None else max(0, ((parse_dt(s["fin"]) or ahora) - ini).total_seconds() / 60)
+        t = tareas.get(s["tarea_id"])
+        if t:
+            dia = por_dia[ini.date().isoformat()]["trabajadas"]
+            dia.setdefault(t["id"], {**breve(t), "minutos": 0})["minutos"] += m
+    for c in comentarios:
+        t = tareas.get(c["tarea_id"])
+        if t:
+            por_dia[c["creado_en"][:10]]["comentarios"].append({"texto": c["texto"], "hora": c["creado_en"][11:16], "tarea": breve(t)})
+    for r in practica:
+        por_dia[r["fecha"]]["practica"].append({"meta": r["herramienta"], "minutos": r["minutos"], "nota": r["nota"]})
+
+    salida, total = [], {"completadas": 0, "a_tiempo": 0, "subtareas": 0, "minutos_foco": 0, "minutos_practica": 0,
+                         "comentarios": 0, "dias_habiles": 0, "dias_con_actividad": 0}
+    for i, d in enumerate(dias):
+        k = d.isoformat()
+        x = por_dia[k]
+        trabajadas = sorted(({**v, "minutos": round(v["minutos"])} for v in x["trabajadas"].values()),
+                            key=lambda v: -v["minutos"])
+        minutos_foco = sum(v["minutos"] for v in trabajadas)
+        minutos_practica = sum(p["minutos"] for p in x["practica"])
+        festivo = fest.get(k)
+        habil = i < 5 and not festivo
+        hubo = any([x["completadas"], x["subtareas"], trabajadas, x["comentarios"], x["practica"]])
+        salida.append({
+            "fecha": k, "dia_semana": DIAS_SEMANA[i], "festivo": festivo, "fin_de_semana": i >= 5, "habil": habil,
+            "hoy": d == hoy, "futuro": d > hoy,
+            "completadas": sorted(x["completadas"], key=lambda v: v["hora"]),
+            "subtareas": sorted(x["subtareas"], key=lambda v: v["hora"]),
+            "trabajadas": trabajadas, "comentarios": x["comentarios"], "practica": x["practica"],
+            "minutos_foco": minutos_foco, "minutos_practica": minutos_practica,
+        })
+        total["completadas"] += len(x["completadas"])
+        total["a_tiempo"] += sum(1 for v in x["completadas"] if v["a_tiempo"])
+        total["subtareas"] += len(x["subtareas"])
+        total["minutos_foco"] += minutos_foco
+        total["minutos_practica"] += minutos_practica
+        total["comentarios"] += len(x["comentarios"])
+        total["dias_habiles"] += 1 if habil else 0
+        total["dias_con_actividad"] += 1 if hubo else 0
+    total["promedio_por_dia_habil"] = round(total["completadas"] / total["dias_habiles"], 1) if total["dias_habiles"] else None
+
+    anterior = (lunes - timedelta(days=7)).isocalendar()
+    siguiente = (lunes + timedelta(days=7)).isocalendar()
+    fuente = "api" if "api" in fuentes else ("calculado" if "calculado" in fuentes else "guardado")
+    return jsonify({
+        "anio": anio, "semana": semana, "desde": dias[0].isoformat(), "hasta": dias[-1].isoformat(),
+        "semanas_del_anio": date(anio, 12, 28).isocalendar()[1],
+        "es_actual": (anio, semana) == (anio_hoy, semana_hoy),
+        "anterior": {"anio": anterior[0], "semana": anterior[1]},
+        "siguiente": {"anio": siguiente[0], "semana": siguiente[1]},
+        "festivos_fuente": fuente,
+        "festivos_semana": [{"fecha": d["fecha"], "nombre": d["festivo"]} for d in salida if d["festivo"]],
+        "dias": salida, "resumen": total,
+    })
+
+
+@app.post("/api/festivos/<int:anio>/actualizar")
+def api_actualizar_festivos(anio):
+    """Vuelve a consultar la API de festivos para ese año (por si antes no había conexión)."""
+    with db.conexion() as conn:
+        f, fuente = festivos_co.refrescar(conn, anio)
+    return jsonify(anio=anio, fuente=fuente, total=len(f))
 
 
 # ───────────────────────── alertas ─────────────────────────
