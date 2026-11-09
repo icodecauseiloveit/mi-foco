@@ -16,6 +16,7 @@ const PRIORIDADES = {
 const EVENTOS = {
   creada: 'Creada', editada: 'Editada', reprogramada: 'Reprogramada', iniciada: 'Iniciada', reanudada: 'Reanudada',
   pausada: 'Pausada', completada: 'Completada', reabierta: 'Reabierta', cancelada: 'Cancelada', vencida: 'Venció', eliminada: 'Eliminada',
+  dependencias: 'Dependencias', desbloqueada: 'Desbloqueada 🔓', bloqueada: 'Bloqueada 🔒',
   subtarea_completada: 'Subtarea completada', subtarea_reabierta: 'Subtarea desmarcada', subtareas: 'Subtareas modificadas',
 };
 const ABIERTOS = ['pendiente', 'en_progreso', 'pausada'];
@@ -41,8 +42,23 @@ async function api(path, opts = {}) {
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
   const data = await r.json().catch(() => null);
-  if (!r.ok) throw new Error((data && data.error) || `Error ${r.status}`);
+  if (!r.ok) {
+    const err = new Error((data && data.error) || `Error ${r.status}`);
+    err.status = r.status;
+    err.data = data;
+    throw err;
+  }
+  if (data && Array.isArray(data.desbloqueadas) && data.desbloqueadas.length) avisarDesbloqueadas(data.desbloqueadas);
   return data;
+}
+
+/** Aviso cuando terminar algo libera tareas que estaban esperando. */
+function avisarDesbloqueadas(lista) {
+  const nombres = lista.map((t) => `«${t.titulo}»`).join(', ');
+  toast(`🔓 Ya puedes empezar: ${nombres}`, 'exito');
+  if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+    new Notification('Mi Foco · Tarea desbloqueada', { body: `Ya puedes empezar: ${nombres}` });
+  }
 }
 
 function toast(msg, tipo = '') {
@@ -214,6 +230,69 @@ function barraAvance(t, conBoton = true) {
   </div>`;
 }
 
+/* ─────────── dependencias ─────────── */
+const nombreRequisito = (d) => (d.tipo === 'subtarea' ? `${d.titulo} (de «${d.tarea_titulo}»)` : d.titulo);
+
+function chipsDependencia(t) {
+  const chips = [];
+  if (t.bloqueada) {
+    const pend = t.dependencias.filter((d) => !d.completa);
+    const lista = pend.map((d) => '• ' + nombreRequisito(d)).join('\n');
+    const texto = pend.length === 1 ? `Espera: ${pend[0].titulo}` : `Espera ${pend.length} cosas`;
+    chips.push(`<span class="chip bloq" title="Esta tarea espera:\n${esc(lista)}">🔒 ${esc(texto)}</span>`);
+  } else if (abierta(t) && t.dependencias.length) {
+    chips.push(`<span class="chip verde" title="Todo lo que esperaba ya está listo">🔓 Lista para empezar</span>`);
+  }
+  if (t.frena_a && t.frena_a.length) {
+    const lista = t.frena_a.map((x) => '• ' + x.titulo).join('\n');
+    chips.push(`<span class="chip ambar" title="Estas tareas esperan a esta:\n${esc(lista)}">⛓ Frena a ${t.frena_a.length}</span>`);
+  }
+  return chips.join('');
+}
+
+/** Opciones agrupadas por tarea: la tarea completa o cualquiera de sus subtareas pendientes. */
+function opcionesDependencia(t) {
+  const elegidas = new Set((t.dependencias || []).map((d) => `${d.tipo}:${d.ref_id}`));
+  return st.tareas
+    .filter((x) => x.id !== t.id && abierta(x))
+    .sort(ordenPrioridad)
+    .map((x) => {
+      const subs = x.subtareas.filter((s) => !s.completada);
+      return `<optgroup label="${esc(`${x.prioridad} · ${x.titulo}`)}">
+        <option value="tarea:${x.id}" ${elegidas.has(`tarea:${x.id}`) ? 'disabled' : ''}>▸ Toda la tarea</option>
+        ${subs.map((s) => `<option value="subtarea:${s.id}" ${elegidas.has(`subtarea:${s.id}`) ? 'disabled' : ''}>↳ ${esc(s.titulo)}</option>`).join('')}
+      </optgroup>`;
+    }).join('');
+}
+
+const chipDependencia = (d) => `<span class="chip dep-chip ${d.completa ? 'verde' : 'bloq'}" data-dep-valor="${d.tipo}:${d.ref_id}">
+    ${d.completa ? '✓' : '⏳'} ${esc(nombreRequisito(d))}
+    <button type="button" class="dep-x" data-quitar-dep title="Quitar">✕</button></span>`;
+
+function editorDependencias(t) {
+  const hay = st.tareas.some((x) => x.id !== t.id && abierta(x));
+  return `<div class="dep-editor">
+    <div class="dep-lista">${(t.dependencias || []).map(chipDependencia).join('')}</div>
+    ${hay ? `<select data-dep-select><option value="">＋ Esperar a una tarea o subtarea…</option>${opcionesDependencia(t)}</select>`
+      : '<span class="ayuda">No hay otras tareas abiertas de las cuales depender.</span>'}
+  </div>`;
+}
+
+/** Arma la descripción de un requisito elegido en el formulario a partir de las tareas cargadas. */
+function requisitoDesdeValor(valor) {
+  const [tipo, id] = valor.split(':');
+  const ref = Number(id);
+  if (tipo === 'tarea') {
+    const x = st.tareas.find((y) => y.id === ref);
+    return x && { tipo, ref_id: ref, titulo: x.titulo, tarea_titulo: x.titulo, completa: !abierta(x) };
+  }
+  for (const x of st.tareas) {
+    const sub = x.subtareas.find((y) => y.id === ref);
+    if (sub) return { tipo, ref_id: ref, titulo: sub.titulo, tarea_titulo: x.titulo, completa: sub.completada };
+  }
+  return null;
+}
+
 function tarjetaTarea(t) {
   const acc = [];
   if (['pendiente', 'pausada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="iniciar" data-id="${t.id}">▶ ${t.estado === 'pausada' ? 'Reanudar' : 'Iniciar'}</button>`);
@@ -225,16 +304,17 @@ function tarjetaTarea(t) {
   if (t.estado !== 'pendiente') chips.push(`<span class="chip ${t.estado === 'en_progreso' ? 'azul' : ''}">${ESTADOS[t.estado]}</span>`);
   if (t.meta_nombre) chips.push(`<span class="chip azul">◆ ${esc(t.meta_nombre)}</span>`);
   chips.push(etiquetaLimite(t));
+  chips.push(chipsDependencia(t));
   if (t.tiempo_real_min > 0 || t.estimado_min) {
     const real = fmtMin(t.tiempo_real_min);
     const est = t.estimado_min ? ` / ${fmtMin(t.estimado_min)}` : '';
     const exceso = t.estimado_min && t.tiempo_real_min > t.estimado_min;
     chips.push(`<span class="chip ${exceso ? 'ambar' : ''}">⏱ ${real}${est}</span>`);
   }
-  return `<article class="tarea est-${t.estado} ${t.vencida ? 'vencida' : ''}">
+  return `<article class="tarea est-${t.estado} ${t.vencida ? 'vencida' : ''} ${t.bloqueada ? 'bloqueada' : ''}">
     <div class="prio prio-${t.prioridad}" title="${esc(PRIORIDADES[t.prioridad])}">${t.prioridad}</div>
     <div class="t-cuerpo">
-      <div class="t-titulo" data-detalle="${t.id}">${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</div>
+      <div class="t-titulo" data-detalle="${t.id}">${t.bloqueada ? '🔒 ' : ''}${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</div>
       <div class="t-meta">${chips.join('')}</div>
       ${barraAvance(t)}
       ${t.subtareas_total && subExpandida(t) ? checklistSubtareas(t) : ''}
@@ -291,7 +371,7 @@ async function vistaHoy() {
     <div class="tarjeta rana">
       <div class="emoji">🐸</div>
       <div class="cuerpo"><span class="sutil">${rana.es_rana ? 'Tu rana de hoy' : 'Tu tarea A más importante'}</span>
-        <b>${esc(rana.titulo)}</b>${etiquetaLimite(rana)}${barraAvance(rana, false)}</div>
+        <b>${rana.bloqueada ? '🔒 ' : ''}${esc(rana.titulo)}</b>${etiquetaLimite(rana)}${chipsDependencia(rana)}${barraAvance(rana, false)}</div>
       ${rana.estado === 'en_progreso'
         ? `<button class="exito" data-accion="completar" data-id="${rana.id}">✓ Terminé</button>`
         : `<button class="primario" data-accion="iniciar" data-id="${rana.id}">Comer la rana ▶</button>`}
@@ -338,7 +418,9 @@ function filtrarTareas() {
   return st.tareas.filter((t) => {
     if (f.estado === 'abiertas' && !abierta(t)) return false;
     if (f.estado === 'vencidas' && !t.vencida) return false;
-    if (!['abiertas', 'vencidas', 'todas'].includes(f.estado) && t.estado !== f.estado) return false;
+    if (f.estado === 'bloqueadas' && !t.bloqueada) return false;
+    if (f.estado === 'disponibles' && (!abierta(t) || t.bloqueada)) return false;
+    if (!['abiertas', 'vencidas', 'todas', 'bloqueadas', 'disponibles'].includes(f.estado) && t.estado !== f.estado) return false;
     if (f.prioridad && t.prioridad !== f.prioridad) return false;
     if (f.categoria && t.categoria !== f.categoria) return false;
     if (q && !`${t.titulo} ${t.descripcion || ''} ${t.categoria}`.toLowerCase().includes(q)) return false;
@@ -365,7 +447,7 @@ async function vistaTareas() {
     <div class="filtros">
       <input id="f-q" placeholder="Buscar…" value="${esc(f.q)}">
       <select id="f-estado">
-        ${opt('abiertas', 'Abiertas', f.estado)}${opt('vencidas', 'Vencidas', f.estado)}
+        ${opt('abiertas', 'Abiertas', f.estado)}${opt('disponibles', 'Disponibles (sin bloqueo)', f.estado)}${opt('bloqueadas', '🔒 Bloqueadas', f.estado)}${opt('vencidas', 'Vencidas', f.estado)}
         ${Object.entries(ESTADOS).map(([k, v]) => opt(k, v, f.estado)).join('')}${opt('todas', 'Todas', f.estado)}
       </select>
       <select id="f-prioridad">${opt('', 'Toda prioridad', f.prioridad)}${Object.keys(PRIORIDADES).map((p) => opt(p, 'Prioridad ' + p, f.prioridad)).join('')}</select>
@@ -566,7 +648,8 @@ function agregarFilaSub(despuesDe = null, titulo = '') {
 }
 
 async function formTarea(t = {}) {
-  await Promise.all([st.metas.length ? null : cargarMetas().catch(() => {}), cargarCatalogos().catch(() => {})]);
+  await Promise.all([st.metas.length ? null : cargarMetas().catch(() => {}), cargarCatalogos().catch(() => {}),
+    st.tareas.length ? null : cargarTareas().catch(() => {})]);
   const metas = st.metas.filter((m) => m.estado !== 'lograda' || m.id === t.meta_id);
   abrirModal(`<h2>${t.id ? 'Editar' : 'Nueva'} tarea</h2>
     <form id="f-tarea" data-id="${t.id || ''}">
@@ -584,6 +667,8 @@ async function formTarea(t = {}) {
         <select name="meta_id"><option value="">— Ninguna —</option>${metas.map((m) => `<option value="${m.id}" ${t.meta_id === m.id ? 'selected' : ''}>${esc(m.herramienta)}</option>`).join('')}</select></label>
       <label>Subtareas <span class="ayuda">(opcional · cada una se completa por separado y define el % de avance)</span></label>
       ${editorSubtareas(t.subtareas || [])}
+      <label>Depende de <span class="ayuda">(opcional · la tarea queda 🔒 bloqueada hasta que esto se complete)</span></label>
+      ${editorDependencias(t)}
       <label class="check"><input type="checkbox" name="es_rana" ${t.es_rana ? 'checked' : ''}> 🐸 Es mi “rana”: la tarea más importante y difícil, la hago primero</label>
       <div class="botones"><button type="button" class="secundario" data-cerrar>Cancelar</button><button class="primario">Guardar</button></div>
     </form>`);
@@ -674,6 +759,14 @@ async function verDetalle(id) {
   abrirModal(`<h2>${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</h2>
     ${t.descripcion ? `<p style="white-space:pre-wrap">${esc(t.descripcion)}</p>` : ''}
     <div class="datos" style="grid-template-columns:repeat(3,1fr)">${filas.map(([l, v]) => `<div><b>${v}</b><span>${l}</span></div>`).join('')}</div>
+    ${t.dependencias.length || t.frena_a.length ? `<h3 style="margin:18px 0 8px">Dependencias ${t.bloqueada ? '<span class="chip bloq">🔒 Bloqueada</span>' : ''}</h3>
+      ${t.dependencias.length ? `<div class="sutil" style="margin-bottom:6px">Espera a:</div><ul class="deps">${t.dependencias.map((d) => `<li class="${d.completa ? 'resuelta' : ''}">
+          <span>${d.completa ? '✓' : '⏳'}</span>
+          <a href="#" data-detalle="${d.tarea_id}">${esc(nombreRequisito(d))}</a>
+          <small>${d.completa ? (d.estado === 'completada' ? 'completada' : esc(d.estado)) : 'pendiente'}</small>
+          <button class="ico" data-borrar-dep="${d.id}" data-tarea="${t.id}" title="Quitar dependencia">✕</button></li>`).join('')}</ul>` : ''}
+      ${t.frena_a.length ? `<div class="sutil" style="margin:10px 0 6px">Estas tareas te esperan:</div><ul class="deps">${t.frena_a.map((x) => `<li><span>⛓</span>
+          <a href="#" data-detalle="${x.id}">${esc(x.titulo)}</a></li>`).join('')}</ul>` : ''}` : ''}
     ${t.subtareas_total || abierta(t) ? `<h3 style="margin:18px 0 8px">Subtareas</h3><div data-detalle-subs="${t.id}">${barraAvance(t, false)}${checklistSubtareas(t)}</div>` : ''}
     <h3 style="margin:18px 0 12px">Línea de tiempo</h3>
     <ul class="timeline">${t.eventos.map((e) => `<li class="ev-${e.tipo}"><b>${EVENTOS[e.tipo] || esc(e.tipo)}</b>
@@ -701,7 +794,15 @@ async function accionTarea(id, accion) {
     cuerpo.motivo = motivo;
   }
   try {
-    const r = await api(`/api/tareas/${id}/accion`, { method: 'POST', body: cuerpo });
+    let r;
+    try {
+      r = await api(`/api/tareas/${id}/accion`, { method: 'POST', body: cuerpo });
+    } catch (err) {
+      if (err.status !== 409 || !err.data || !err.data.bloqueada) throw err;
+      const verbo = accion === 'iniciar' ? 'Iniciarla' : 'Completarla';
+      if (!confirm(`🔒 Esta tarea está esperando:\n• ${err.data.pendientes.join('\n• ')}\n\n¿${verbo} de todas formas? Quedará registrado en el historial.`)) return;
+      r = await api(`/api/tareas/${id}/accion`, { method: 'POST', body: { ...cuerpo, forzar: true } });
+    }
     const msgs = {
       iniciar: '▶ En marcha. Una sola cosa a la vez.',
       pausar: '⏸ Pausada.',
@@ -723,6 +824,12 @@ function datosForm(f) {
     if (!o.categoria) throw new Error('Escribe el nombre de la nueva categoría.');
   }
   delete o.categoria_nueva;
+  if ($('.dep-editor', f)) {
+    o.dependencias = $$('.dep-chip', f).map((c) => {
+      const [tipo, id] = c.dataset.depValor.split(':');
+      return { tipo, id: Number(id) };
+    });
+  }
   if ($('.sub-editor', f)) {
     o.subtareas = $$('.sub-fila', f)
       .map((r) => ({ id: r.dataset.subId ? Number(r.dataset.subId) : null, titulo: $('.sub-input', r).value.trim() }))
@@ -832,6 +939,21 @@ document.addEventListener('click', async (e) => {
     if (d.ponerIcono) return guardarIcono(Number(d.cat), { icono: d.ponerIcono }, `Ícono ${d.ponerIcono} asignado`);
     if (d.quitarIcono) return guardarIcono(Number(d.quitarIcono), { quitar_icono: true }, 'Ícono quitado');
     if (d.volverCatalogos !== undefined) return gestionarCatalogos('categorias');
+    if (d.quitarDep !== undefined) {
+      const chip = el.closest('.dep-chip');
+      const sel = chip.closest('.dep-editor').querySelector('[data-dep-select]');
+      const opcion = sel && [...sel.options].find((o) => o.value === chip.dataset.depValor);
+      if (opcion) opcion.disabled = false;
+      chip.remove();
+      return;
+    }
+    if (d.borrarDep) {
+      if (!confirm('¿Quitar esta dependencia?')) return;
+      await api(`/api/dependencias/${d.borrarDep}`, { method: 'DELETE' });
+      toast('Dependencia quitada');
+      await verDetalle(Number(d.tarea));
+      return render();
+    }
     if (d.agregarSub !== undefined) { $('.sub-input', agregarFilaSub()).focus(); return; }
     if (d.quitarSub !== undefined) {
       const fila = el.closest('.sub-fila');
@@ -886,6 +1008,16 @@ document.addEventListener('change', async (e) => {
         await accionTarea(t.id, 'completar');
       }
     } catch (err) { toast(err.message, 'error'); el.checked = !el.checked; }
+    return;
+  }
+  if (el.dataset.depSelect !== undefined) {
+    const d = el.value && requisitoDesdeValor(el.value);
+    if (d) {
+      const lista = el.closest('.dep-editor').querySelector('.dep-lista');
+      lista.insertAdjacentHTML('beforeend', chipDependencia(d));
+      el.selectedOptions[0].disabled = true;
+    }
+    el.value = '';
     return;
   }
   if (el.dataset.selectorCategoria !== undefined) {

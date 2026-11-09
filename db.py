@@ -101,6 +101,20 @@ CREATE TABLE IF NOT EXISTS subtareas (
 );
 CREATE INDEX IF NOT EXISTS ix_subtareas_tarea ON subtareas(tarea_id);
 
+-- Una tarea puede esperar a otra tarea completa o a una subtarea específica.
+CREATE TABLE IF NOT EXISTS dependencias (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    tarea_id             INTEGER NOT NULL REFERENCES tareas(id) ON DELETE CASCADE,
+    depende_tarea_id     INTEGER REFERENCES tareas(id) ON DELETE CASCADE,
+    depende_subtarea_id  INTEGER REFERENCES subtareas(id) ON DELETE CASCADE,
+    creada_en            TEXT NOT NULL,
+    CHECK ((depende_tarea_id IS NULL) <> (depende_subtarea_id IS NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_dependencias
+    ON dependencias(tarea_id, COALESCE(depende_tarea_id, 0), COALESCE(depende_subtarea_id, 0));
+CREATE INDEX IF NOT EXISTS ix_dep_tarea ON dependencias(depende_tarea_id);
+CREATE INDEX IF NOT EXISTS ix_dep_subtarea ON dependencias(depende_subtarea_id);
+
 -- Catálogos reutilizables al crear tareas.
 CREATE TABLE IF NOT EXISTS categorias (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

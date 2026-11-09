@@ -55,6 +55,11 @@ def fmt_dur_dias(dias):
     return f"{dias:.1f} días".replace(".0 ", " ")
 
 
+def cap(texto):
+    """Mayúscula inicial sin tocar el resto (str.capitalize pondría en minúscula los títulos citados)."""
+    return texto[:1].upper() + texto[1:] if texto else texto
+
+
 def body():
     return request.get_json(silent=True) or {}
 
@@ -130,9 +135,153 @@ def subtareas_por_tarea(conn, tid=None):
     return res
 
 
-def serializar(row, totales, abiertas, subs=None):
+# ───────────────────────── dependencias ─────────────────────────
+SQL_DEPENDENCIAS = """
+SELECT d.id, d.tarea_id, d.depende_tarea_id, d.depende_subtarea_id,
+       td.titulo AS dep_titulo, td.estado AS dep_estado, td.eliminada AS dep_eliminada,
+       t.titulo  AS t_titulo,  t.estado  AS t_estado,  t.eliminada  AS t_eliminada,
+       s.titulo  AS s_titulo,  s.completada AS s_completada, s.tarea_id AS s_padre,
+       tp.titulo AS p_titulo,  tp.estado AS p_estado, tp.eliminada AS p_eliminada
+FROM dependencias d
+JOIN tareas td ON td.id = d.tarea_id
+LEFT JOIN tareas t ON t.id = d.depende_tarea_id
+LEFT JOIN subtareas s ON s.id = d.depende_subtarea_id
+LEFT JOIN tareas tp ON tp.id = s.tarea_id
+"""
+CERRADOS = ("completada", "cancelada")
+
+
+def info_dependencias(conn):
+    """Devuelve ({tarea: [requisitos]}, {tarea requisito: [tareas abiertas que frena]})."""
+    requisitos, frena = {}, {}
+    for r in conn.execute(SQL_DEPENDENCIAS):
+        if r["dep_eliminada"]:
+            continue
+        if r["depende_tarea_id"]:
+            completa = bool(r["t_eliminada"]) or r["t_estado"] in CERRADOS
+            item = {"id": r["id"], "tipo": "tarea", "ref_id": r["depende_tarea_id"], "tarea_id": r["depende_tarea_id"],
+                    "titulo": r["t_titulo"], "tarea_titulo": r["t_titulo"],
+                    "estado": "eliminada" if r["t_eliminada"] else r["t_estado"]}
+        else:
+            padre_cerrado = bool(r["p_eliminada"]) or r["p_estado"] in CERRADOS
+            completa = bool(r["s_completada"]) or padre_cerrado
+            item = {"id": r["id"], "tipo": "subtarea", "ref_id": r["depende_subtarea_id"], "tarea_id": r["s_padre"],
+                    "titulo": r["s_titulo"], "tarea_titulo": r["p_titulo"],
+                    "estado": "completada" if r["s_completada"] else ("eliminada" if r["p_eliminada"] else r["p_estado"])}
+        item["completa"] = completa
+        requisitos.setdefault(r["tarea_id"], []).append(item)
+        if not completa and r["dep_estado"] in ABIERTOS:
+            lista = frena.setdefault(item["tarea_id"], [])
+            if not any(x["id"] == r["tarea_id"] for x in lista):
+                lista.append({"id": r["tarea_id"], "titulo": r["dep_titulo"]})
+    return requisitos, frena
+
+
+def ids_bloqueadas(conn):
+    requisitos, _ = info_dependencias(conn)
+    abiertas = {r["id"] for r in conn.execute(
+        "SELECT id FROM tareas WHERE eliminada=0 AND estado IN ('pendiente','en_progreso','pausada')")}
+    return {tid for tid, reqs in requisitos.items() if tid in abiertas and any(not x["completa"] for x in reqs)}
+
+
+def registrar_cambios_bloqueo(conn, antes, motivo):
+    """Compara el conjunto de tareas bloqueadas antes/después de un cambio y lo deja en la bitácora."""
+    despues = ids_bloqueadas(conn)
+    desbloqueadas = []
+    for tid in sorted(antes - despues):
+        r = conn.execute("SELECT titulo, estado FROM tareas WHERE id=? AND eliminada=0", (tid,)).fetchone()
+        if r and r["estado"] in ABIERTOS:
+            registrar_evento(conn, tid, "desbloqueada", r["estado"], r["estado"], f"Ya puede empezar: {motivo}")
+            desbloqueadas.append({"id": tid, "titulo": r["titulo"]})
+    for tid in sorted(despues - antes):
+        r = conn.execute("SELECT estado FROM tareas WHERE id=?", (tid,)).fetchone()
+        registrar_evento(conn, tid, "bloqueada", r["estado"], r["estado"], f"Vuelve a esperar: {motivo}")
+    return desbloqueadas
+
+
+def tarea_de_requisito(conn, tipo, ref_id):
+    """Valida el requisito y devuelve (id de la tarea a la que pertenece, texto para mostrar)."""
+    if tipo == "tarea":
+        r = conn.execute("SELECT id, titulo FROM tareas WHERE id=? AND eliminada=0", (ref_id,)).fetchone()
+        if not r:
+            raise ValueError("La tarea de la que quieres depender no existe.")
+        return r["id"], f"«{r['titulo']}»"
+    r = conn.execute("SELECT s.titulo, s.tarea_id, t.titulo AS padre FROM subtareas s JOIN tareas t ON t.id=s.tarea_id "
+                     "WHERE s.id=? AND t.eliminada=0", (ref_id,)).fetchone()
+    if not r:
+        raise ValueError("La subtarea de la que quieres depender no existe.")
+    return r["tarea_id"], f"«{r['titulo']}» (de «{r['padre']}»)"
+
+
+def crearia_ciclo(conn, tid, requisito_tid):
+    """True si `requisito_tid` ya depende (directa o indirectamente) de `tid`."""
+    aristas = {}
+    for r in conn.execute("SELECT d.tarea_id, COALESCE(d.depende_tarea_id, s.tarea_id) AS req FROM dependencias d "
+                          "LEFT JOIN subtareas s ON s.id = d.depende_subtarea_id"):
+        aristas.setdefault(r["tarea_id"], set()).add(r["req"])
+    pila, vistos = [requisito_tid], set()
+    while pila:
+        actual = pila.pop()
+        if actual == tid:
+            return True
+        if actual in vistos:
+            continue
+        vistos.add(actual)
+        pila.extend(aristas.get(actual, ()))
+    return False
+
+
+def limpiar_dependencias(valor):
+    if valor is None:
+        return None
+    if not isinstance(valor, list):
+        raise ValueError("Las dependencias deben enviarse como lista.")
+    out = []
+    for item in valor:
+        tipo = (item or {}).get("tipo")
+        if tipo not in ("tarea", "subtarea"):
+            raise ValueError("Tipo de dependencia inválido.")
+        clave = (tipo, int(item.get("id")))
+        if clave not in out:
+            out.append(clave)
+    return out
+
+
+def sincronizar_dependencias(conn, tid, lista):
+    actuales = {}
+    for r in conn.execute("SELECT * FROM dependencias WHERE tarea_id=?", (tid,)):
+        clave = ("tarea", r["depende_tarea_id"]) if r["depende_tarea_id"] else ("subtarea", r["depende_subtarea_id"])
+        actuales[clave] = r
+    agregadas, quitadas = [], []
+    for clave in lista:
+        if clave in actuales:
+            continue
+        tipo, ref = clave
+        req_tid, texto = tarea_de_requisito(conn, tipo, ref)
+        if req_tid == tid:
+            raise ValueError("Una tarea no puede depender de sí misma ni de sus propias subtareas.")
+        if crearia_ciclo(conn, tid, req_tid):
+            raise ValueError(f"No se puede: {texto} ya depende de esta tarea (se formaría un ciclo).")
+        conn.execute("INSERT INTO dependencias (tarea_id, depende_tarea_id, depende_subtarea_id, creada_en) VALUES (?,?,?,?)",
+                     (tid, ref if tipo == "tarea" else None, ref if tipo == "subtarea" else None, db.ahora()))
+        agregadas.append(texto)
+    for clave, r in actuales.items():
+        if clave not in lista:
+            try:
+                quitadas.append(tarea_de_requisito(conn, *clave)[1])
+            except ValueError:
+                quitadas.append("(elemento eliminado)")
+            conn.execute("DELETE FROM dependencias WHERE id=?", (r["id"],))
+    return agregadas, quitadas
+
+
+def serializar(row, totales, abiertas, subs=None, deps=None):
     t = dict(row)
     ahora = datetime.now()
+    requisitos, frena = deps or ({}, {})
+    t["dependencias"] = requisitos.get(t["id"], [])
+    t["bloqueada"] = t["estado"] in ABIERTOS and any(not x["completa"] for x in t["dependencias"])
+    t["frena_a"] = frena.get(t["id"], []) if t["estado"] in ABIERTOS else []
     lista = (subs or {}).get(t["id"], [])
     hechas = sum(1 for s in lista if s["completada"])
     t["subtareas"] = lista
@@ -178,7 +327,8 @@ def listar_tareas(conn, incluir_cerradas=False):
         q += " AND t.estado IN ('pendiente','en_progreso','pausada')"
     totales, abiertas = tiempos_por_tarea(conn)
     subs = subtareas_por_tarea(conn)
-    return [serializar(r, totales, abiertas, subs) for r in conn.execute(q + " ORDER BY t.id DESC")]
+    deps = info_dependencias(conn)
+    return [serializar(r, totales, abiertas, subs, deps) for r in conn.execute(q + " ORDER BY t.id DESC")]
 
 
 def fila_tarea(conn, tid):
@@ -193,7 +343,7 @@ def obtener_tarea(conn, tid):
     if not r:
         abort(404, "Tarea no encontrada.")
     totales, abiertas = tiempos_por_tarea(conn)
-    return serializar(r, totales, abiertas, subtareas_por_tarea(conn, tid))
+    return serializar(r, totales, abiertas, subtareas_por_tarea(conn, tid), info_dependencias(conn))
 
 
 def limpiar_subtareas(valor):
@@ -318,6 +468,7 @@ def api_crear_tarea():
     d = body()
     campos = limpiar_tarea(d)
     subtareas = limpiar_subtareas(d.get("subtareas")) or []
+    dependencias = limpiar_dependencias(d.get("dependencias")) or []
     campos.setdefault("es_rana", 0)
     ahora = db.ahora()
     campos.update(estado="pendiente", creada_en=ahora, actualizada_en=ahora)
@@ -335,6 +486,9 @@ def api_crear_tarea():
             sincronizar_subtareas(conn, tid, subtareas)
             detalle += f" · {len(subtareas)} subtarea(s)"
         registrar_evento(conn, tid, "creada", None, "pendiente", detalle)
+        if dependencias:
+            agregadas, _ = sincronizar_dependencias(conn, tid, dependencias)
+            registrar_evento(conn, tid, "dependencias", None, None, "Depende de " + ", ".join(agregadas))
         return jsonify(obtener_tarea(conn, tid)), 201
 
 
@@ -354,8 +508,19 @@ def api_editar_tarea(tid):
     d = body()
     campos = limpiar_tarea(d, parcial=True)
     subtareas = limpiar_subtareas(d.get("subtareas"))
+    dependencias = limpiar_dependencias(d.get("dependencias"))
     with db.conexion() as conn:
         actual = fila_tarea(conn, tid)
+        antes = ids_bloqueadas(conn)
+        if dependencias is not None:
+            agregadas, quitadas = sincronizar_dependencias(conn, tid, dependencias)
+            partes = []
+            if agregadas:
+                partes.append("ahora depende de " + ", ".join(agregadas))
+            if quitadas:
+                partes.append("ya no depende de " + ", ".join(quitadas))
+            if partes:
+                registrar_evento(conn, tid, "dependencias", None, None, cap("; ".join(partes)))
         if subtareas is not None:
             nuevas, quitadas = sincronizar_subtareas(conn, tid, subtareas)
             if nuevas or quitadas:
@@ -386,7 +551,15 @@ def api_editar_tarea(tid):
             otros = [k for k in cambios if k not in ("fecha_limite", "prioridad")]
             if otros:
                 registrar_evento(conn, tid, "editada", None, None, "Cambió: " + ", ".join(otros))
-        return jsonify(obtener_tarea(conn, tid))
+        if dependencias is not None:
+            # El cambio de bloqueo de esta misma tarea ya quedó explicado en el evento «dependencias».
+            if tid in ids_bloqueadas(conn):
+                antes.add(tid)
+            else:
+                antes.discard(tid)
+        res = obtener_tarea(conn, tid)
+        res["desbloqueadas"] = registrar_cambios_bloqueo(conn, antes, f"se modificó «{actual['titulo']}»")
+        return jsonify(res)
 
 
 @app.delete("/api/tareas/<int:tid>")
@@ -395,11 +568,13 @@ def api_eliminar_tarea(tid):
     ahora = db.ahora()
     with db.conexion() as conn:
         t = fila_tarea(conn, tid)
+        antes = ids_bloqueadas(conn)
         cerrar_sesion(conn, tid, ahora)
         conn.execute("UPDATE tareas SET eliminada=1, eliminada_en=?, actualizada_en=? WHERE id=?",
                      (ahora, ahora, tid))
         registrar_evento(conn, tid, "eliminada", t["estado"], None)
-    return jsonify(ok=True)
+        desbloqueadas = registrar_cambios_bloqueo(conn, antes - {tid}, f"se eliminó «{t['titulo']}»")
+    return jsonify(ok=True, desbloqueadas=desbloqueadas)
 
 
 @app.post("/api/tareas/<int:tid>/accion")
@@ -410,6 +585,16 @@ def api_accion_tarea(tid):
     with db.conexion() as conn:
         t = fila_tarea(conn, tid)
         est = t["estado"]
+        antes = ids_bloqueadas(conn)
+        ignorando = ""
+        if accion in ("iniciar", "completar") and tid in antes:
+            pendientes_dep = [x for x in info_dependencias(conn)[0].get(tid, []) if not x["completa"]]
+            nombres = [f"«{x['titulo']}»" + (f" (de «{x['tarea_titulo']}»)" if x["tipo"] == "subtarea" else "")
+                       for x in pendientes_dep]
+            if not d.get("forzar"):
+                return jsonify(error="Esta tarea está bloqueada: espera " + ", ".join(nombres) + ".",
+                               bloqueada=True, pendientes=nombres), 409
+            ignorando = " · sin esperar " + ", ".join(nombres)
 
         if accion == "iniciar":
             if est not in ("pendiente", "pausada"):
@@ -425,7 +610,7 @@ def api_accion_tarea(tid):
             conn.execute("UPDATE tareas SET estado='en_progreso', iniciada_en=COALESCE(iniciada_en, ?), "
                          "actualizada_en=? WHERE id=?", (ahora, ahora, tid))
             conn.execute("INSERT INTO sesiones (tarea_id, inicio) VALUES (?,?)", (tid, ahora))
-            registrar_evento(conn, tid, tipo, est, "en_progreso")
+            registrar_evento(conn, tid, tipo, est, "en_progreso", cap(ignorando.lstrip(" ·")) or None)
 
         elif accion == "pausar":
             if est != "en_progreso":
@@ -466,7 +651,7 @@ def api_accion_tarea(tid):
                 detalle += f" · última sesión {mins:.0f} min"
             if pendientes:
                 detalle += f" · se cerraron {pendientes} subtarea(s) pendiente(s)"
-            registrar_evento(conn, tid, "completada", est, "completada", detalle)
+            registrar_evento(conn, tid, "completada", est, "completada", detalle + ignorando)
 
         elif accion == "reabrir":
             if est not in ("completada", "cancelada"):
@@ -484,7 +669,10 @@ def api_accion_tarea(tid):
         else:
             raise ValueError("Acción no válida.")
 
-        return jsonify(obtener_tarea(conn, tid))
+        verbo = {"completar": "se completó", "cancelar": "se canceló", "reabrir": "se reabrió"}.get(accion, "cambió")
+        res = obtener_tarea(conn, tid)
+        res["desbloqueadas"] = registrar_cambios_bloqueo(conn, antes, f"{verbo} «{t['titulo']}»")
+        return jsonify(res)
 
 
 # ───────────────────────── subtareas ─────────────────────────
@@ -517,6 +705,7 @@ def api_editar_subtarea(sid):
     with db.conexion() as conn:
         s = fila_subtarea(conn, sid)
         tid = s["tarea_id"]
+        antes = ids_bloqueadas(conn)
         if (d.get("titulo") or "").strip():
             conn.execute("UPDATE subtareas SET titulo=? WHERE id=?", (d["titulo"].strip()[:200], sid))
         if "completada" in d and bool(d["completada"]) != bool(s["completada"]):
@@ -528,17 +717,40 @@ def api_editar_subtarea(sid):
                              (ahora, ahora, tid))
             registrar_evento(conn, tid, "subtarea_completada" if hecha else "subtarea_reabierta", None, None,
                              f"{'✓' if hecha else '↺'} «{s['titulo']}» · avance {avance_texto(conn, tid)}")
-        return jsonify(obtener_tarea(conn, tid))
+        res = obtener_tarea(conn, tid)
+        res["desbloqueadas"] = registrar_cambios_bloqueo(
+            conn, antes, f"{'se completó' if d.get('completada') else 'se desmarcó'} la subtarea «{s['titulo']}»")
+        return jsonify(res)
 
 
 @app.delete("/api/subtareas/<int:sid>")
 def api_eliminar_subtarea(sid):
     with db.conexion() as conn:
         s = fila_subtarea(conn, sid)
+        antes = ids_bloqueadas(conn)
         conn.execute("DELETE FROM subtareas WHERE id=?", (sid,))
         registrar_evento(conn, s["tarea_id"], "subtareas", None, None,
                          f"Quitó «{s['titulo']}» · avance {avance_texto(conn, s['tarea_id'])}")
-        return jsonify(obtener_tarea(conn, s["tarea_id"]))
+        res = obtener_tarea(conn, s["tarea_id"])
+        res["desbloqueadas"] = registrar_cambios_bloqueo(conn, antes, f"se quitó la subtarea «{s['titulo']}»")
+        return jsonify(res)
+
+
+@app.delete("/api/dependencias/<int:did>")
+def api_eliminar_dependencia(did):
+    """Quita un requisito de una tarea (desde el detalle)."""
+    with db.conexion() as conn:
+        r = conn.execute("SELECT * FROM dependencias WHERE id=?", (did,)).fetchone()
+        if not r:
+            abort(404, "Dependencia no encontrada.")
+        tipo, ref = ("tarea", r["depende_tarea_id"]) if r["depende_tarea_id"] else ("subtarea", r["depende_subtarea_id"])
+        try:
+            texto = tarea_de_requisito(conn, tipo, ref)[1]
+        except ValueError:
+            texto = "un elemento eliminado"
+        conn.execute("DELETE FROM dependencias WHERE id=?", (did,))
+        registrar_evento(conn, r["tarea_id"], "dependencias", None, None, f"Ya no depende de {texto}")
+        return jsonify(obtener_tarea(conn, r["tarea_id"]))
 
 
 # ───────────────────────── catálogos: categorías y descripciones ─────────────────────────
@@ -1031,6 +1243,21 @@ def api_alertas():
         alertas.append(dict(clave=f"rana-{date.today()}", nivel="aviso", titulo="Tu rana sigue esperando",
                             tarea_id=ranas[0]["id"],
                             mensaje=f"«{ranas[0]['titulo']}» es tu tarea más importante. Empieza con 10 minutos."))
+    # Ruta crítica: tareas bloqueadas cuya fecha límite está cerca dependen de que algo más avance.
+    for t in tareas:
+        if not t["bloqueada"]:
+            continue
+        hr = t["horas_restantes"]
+        if not (t["vencida"] or (hr is not None and hr <= 48)):
+            continue
+        cuando = "ya venció" if t["vencida"] else f"vence en {hr:.0f} h"
+        for req in t["dependencias"]:
+            if req["completa"]:
+                continue
+            nombre = req["titulo"] + (f" (de «{req['tarea_titulo']}»)" if req["tipo"] == "subtarea" else "")
+            alertas.append(dict(clave=f"critica-{t['id']}-{req['id']}-{date.today()}", nivel="aviso",
+                                titulo="Dependencia en ruta crítica", tarea_id=req["tarea_id"],
+                                mensaje=f"«{t['titulo']}» ({cuando}) sigue esperando «{nombre}»."))
     for m in metas:
         if m["estado"] != "activa":
             continue
@@ -1083,7 +1310,7 @@ def api_exportar_tareas():
     with db.conexion() as conn:
         filas = listar_tareas(conn, incluir_cerradas=True)
     cols = ["id", "titulo", "prioridad", "categoria", "estado", "es_rana", "meta_nombre", "creada_en",
-            "iniciada_en", "completada_en", "fecha_limite", "estimado_min", "tiempo_real_min", "subtareas_total", "subtareas_hechas", "progreso_pct",
+            "iniciada_en", "completada_en", "fecha_limite", "estimado_min", "tiempo_real_min", "bloqueada", "subtareas_total", "subtareas_hechas", "progreso_pct",
             "ciclo_horas", "dias_atraso", "completada_a_tiempo"]
     return _csv("tareas.csv", filas, cols)
 

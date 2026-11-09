@@ -171,6 +171,25 @@ input:focus, select:focus, textarea:focus { border-color: var(--acento); box-sha
 .progreso { height: 10px; background: var(--superficie-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--borde); }
 .progreso > div { height: 100%; background: linear-gradient(90deg, var(--acento), #a855f7); border-radius: 999px; transition: width .4s; }
 
+/* Dependencias */
+.chip.bloq { background: color-mix(in srgb, var(--texto) 9%, transparent); color: var(--texto); border-color: transparent; }
+.tarea.bloqueada { background: repeating-linear-gradient(135deg, var(--superficie), var(--superficie) 12px, var(--superficie-2) 12px, var(--superficie-2) 24px); }
+.tarea.bloqueada .t-titulo { color: var(--sutil); }
+.dep-editor { margin: -6px 0 14px; display: flex; flex-direction: column; gap: 8px; }
+.dep-lista { display: flex; flex-wrap: wrap; gap: 6px; }
+.dep-lista:empty { display: none; }
+.dep-chip { display: inline-flex; align-items: center; gap: 6px; font-size: .82rem; padding: 4px 6px 4px 10px; white-space: normal; }
+.dep-x { border: 0; background: none; cursor: pointer; color: inherit; opacity: .6; padding: 0 4px; font-size: .8rem; }
+.dep-x:hover { opacity: 1; }
+ul.deps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+ul.deps li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 9px; background: var(--superficie-2); font-size: .9rem; }
+ul.deps li a { flex: 1; color: var(--texto); text-decoration: none; }
+ul.deps li a:hover { color: var(--acento); text-decoration: underline; }
+ul.deps li.resuelta a { text-decoration: line-through; color: var(--sutil); }
+ul.deps small { color: var(--sutil); }
+.timeline li.ev-desbloqueada::before { border-color: var(--exito); }
+.timeline li.ev-bloqueada::before, .timeline li.ev-dependencias::before { border-color: var(--sutil); }
+
 /* Íconos de categoría */
 .cat-ico { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: 5px; vertical-align: -3px; font-size: .9rem; line-height: 1; border-radius: 4px; object-fit: cover; flex: none; }
 .chip-cat { display: inline-flex; align-items: center; }
