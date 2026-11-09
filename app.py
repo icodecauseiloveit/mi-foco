@@ -296,8 +296,15 @@ def sincronizar_dependencias(conn, tid, lista):
     return agregadas, quitadas
 
 
-def serializar(row, totales, abiertas, subs=None, deps=None):
+def conteo_comentarios(conn, tid=None):
+    q = "SELECT tarea_id, COUNT(*) AS n, MAX(creado_en) AS ultimo FROM comentarios"
+    q += " WHERE tarea_id=? GROUP BY tarea_id" if tid else " GROUP BY tarea_id"
+    return {r["tarea_id"]: (r["n"], r["ultimo"]) for r in conn.execute(q, (tid,) if tid else ())}
+
+
+def serializar(row, totales, abiertas, subs=None, deps=None, coment=None):
     t = dict(row)
+    t["comentarios_total"], t["ultimo_comentario"] = (coment or {}).get(t["id"], (0, None))
     ahora = datetime.now()
     requisitos, frena = deps or ({}, {})
     t["dependencias"] = requisitos.get(t["id"], [])
@@ -352,7 +359,8 @@ def listar_tareas(conn, incluir_cerradas=False):
     totales, abiertas = tiempos_por_tarea(conn)
     subs = subtareas_por_tarea(conn)
     deps = info_dependencias(conn)
-    return [serializar(r, totales, abiertas, subs, deps) for r in conn.execute(q + " ORDER BY t.id DESC")]
+    coment = conteo_comentarios(conn)
+    return [serializar(r, totales, abiertas, subs, deps, coment) for r in conn.execute(q + " ORDER BY t.id DESC")]
 
 
 def fila_tarea(conn, tid):
@@ -367,7 +375,8 @@ def obtener_tarea(conn, tid):
     if not r:
         abort(404, "Tarea no encontrada.")
     totales, abiertas = tiempos_por_tarea(conn)
-    return serializar(r, totales, abiertas, subtareas_por_tarea(conn, tid), info_dependencias(conn))
+    return serializar(r, totales, abiertas, subtareas_por_tarea(conn, tid), info_dependencias(conn),
+                      conteo_comentarios(conn, tid))
 
 
 def limpiar_subtareas(valor):
@@ -570,6 +579,8 @@ def api_detalle_tarea(tid):
             "SELECT * FROM eventos WHERE tarea_id=? ORDER BY momento, id", (tid,))]
         t["sesiones"] = [dict(s) for s in conn.execute(
             "SELECT * FROM sesiones WHERE tarea_id=? ORDER BY inicio", (tid,))]
+        t["comentarios"] = [dict(c) for c in conn.execute(
+            "SELECT * FROM comentarios WHERE tarea_id=? ORDER BY creado_en, id", (tid,))]
         return jsonify(t)
 
 
@@ -756,6 +767,44 @@ def api_accion_tarea(tid):
         res = obtener_tarea(conn, tid)
         res["desbloqueadas"] = registrar_cambios_bloqueo(conn, antes, f"{verbo} «{t['titulo']}»")
         return jsonify(res)
+
+
+# ───────────────────────── comentarios ─────────────────────────
+def texto_comentario(d):
+    texto = (d.get("texto") or "").strip()
+    if not texto:
+        raise ValueError("Escribe el comentario.")
+    if len(texto) > 5000:
+        raise ValueError("El comentario es muy largo (máx. 5000 caracteres).")
+    return texto
+
+
+@app.post("/api/tareas/<int:tid>/comentarios")
+def api_crear_comentario(tid):
+    texto = texto_comentario(body())
+    with db.conexion() as conn:
+        conn.execute("SELECT 1 FROM tareas WHERE id=? AND eliminada=0", (tid,)).fetchone() or abort(404, "Tarea no encontrada.")
+        cur = conn.execute("INSERT INTO comentarios (tarea_id, texto, creado_en) VALUES (?,?,?)", (tid, texto, db.ahora()))
+        return jsonify(dict(conn.execute("SELECT * FROM comentarios WHERE id=?", (cur.lastrowid,)).fetchone())), 201
+
+
+@app.put("/api/comentarios/<int:cid>")
+def api_editar_comentario(cid):
+    texto = texto_comentario(body())
+    with db.conexion() as conn:
+        c = conn.execute("SELECT * FROM comentarios WHERE id=?", (cid,)).fetchone()
+        if not c:
+            abort(404, "Comentario no encontrado.")
+        if c["texto"] != texto:
+            conn.execute("UPDATE comentarios SET texto=?, editado_en=? WHERE id=?", (texto, db.ahora(), cid))
+        return jsonify(dict(conn.execute("SELECT * FROM comentarios WHERE id=?", (cid,)).fetchone()))
+
+
+@app.delete("/api/comentarios/<int:cid>")
+def api_eliminar_comentario(cid):
+    with db.conexion() as conn:
+        conn.execute("DELETE FROM comentarios WHERE id=?", (cid,))
+    return jsonify(ok=True)
 
 
 # ───────────────────────── subtareas ─────────────────────────

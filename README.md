@@ -33,6 +33,7 @@ python app.py                   # opciones: --puerto 8080  --sin-navegador
 | **Dependencias** | Una tarea puede esperar a otra tarea completa o a una subtarea específica ("Depende de" en el formulario). Mientras falte algo queda 🔒 bloqueada: se ve rayada, el filtro *Bloqueadas / Disponibles* la separa e iniciarla o completarla pide confirmación. La tarea requisito muestra "⛓ Frena a N". Al terminar lo que faltaba se avisa 🔓 *Ya puedes empezar*. Se impiden los ciclos (A espera a B y B espera a A). Alerta de *ruta crítica* si una tarea bloqueada vence en menos de 48 h. |
 | **Registrar lo ya hecho** | Al crear una tarea marca *✅ Ya está completada* e indica fecha y hora de completado (no puede ser futura) y, si quieres, el tiempo dedicado. Se calcula si fue a tiempo frente a su fecha límite y cuenta en las estadísticas de ese día. En cualquier tarea completada la fecha aparece como **✅ fecha ✎**: haz clic en ella (en la tarjeta o en el detalle) para poner otra, con atajos Ayer / Hace 2 días / Hace una semana. Queda en el historial y se recalcula si fue a tiempo. |
 | **Reporte de cumplimiento** | *📤 Reporte de cumplimiento* (barra lateral) genera una imagen PNG lista para el correo: periodo (esta semana, semana pasada, este mes, mes pasado o fechas libres), categoría opcional y "Preparado por". Incluye cumplimiento del plan, entregas a tiempo, completadas, en curso/pendientes, vencidas, avance general y la tabla de actividades con prioridad, estado, avance y fechas. *📋 Copiar imagen* la deja en el portapapeles para pegarla con Ctrl + V en Outlook/Gmail; también se puede descargar. Se dibuja en el navegador, sin servicios externos. |
+| **Comentarios** | Cada tarea tiene una sección de comentarios en su detalle (avances, acuerdos, bloqueos…), con fecha y hora; se pueden editar o borrar. El botón 💬 de la tarjeta abre directo ahí, y la etiqueta **💬 N** muestra cuántos tiene. *Ctrl + Enter* guarda. |
 | **Cronómetro** | Cada *Iniciar → Pausar/Completar* crea una sesión de trabajo. **Una tarea a la vez**: al iniciar otra, la anterior se pausa sola. Si completas sin cronometrar te pregunta cuántos minutos le dedicaste. |
 | **Metas de aprendizaje** | Herramienta, nivel actual → objetivo (1‑5), horas objetivo, fecha, hitos con checklist y registro de práctica. El progreso combina horas y hitos; calcula el **ritmo semanal necesario**. Las horas de tareas vinculadas también suman. |
 | **Rendimiento** | Puntaje 0‑100, entregas a tiempo, atraso promedio, ciclo promedio, real vs. estimado, racha, foco en lo vital (80/20), reprogramaciones, gráficos diarios y por prioridad/categoría (7 a 365 días). |
@@ -56,7 +57,7 @@ Atajo: tecla **N** abre "Nueva tarea".
 - Eliminar una tarea es **borrado lógico**: desaparece de las vistas pero su historial queda.
 - Exporta `tareas.csv` y `eventos.csv` (separador `;`, UTF‑8) desde la barra lateral, o conecta Power BI directamente al `.db` con el conector ODBC de SQLite.
 
-Tablas: `tareas`, `sesiones`, `eventos`, `subtareas`, `dependencias`, `categorias`, `descripciones`, `metas`, `hitos_meta`, `registros_aprendizaje`.
+Tablas: `tareas`, `sesiones`, `eventos`, `subtareas`, `dependencias`, `comentarios`, `categorias`, `descripciones`, `metas`, `hitos_meta`, `registros_aprendizaje`.
 Si ya tenías datos, al arrancar la nueva versión las categorías y descripciones existentes se cargan solas en sus tablas.
 
 ## API (por si quieres automatizar)
@@ -76,6 +77,7 @@ GET             /api/reporte?desde=AAAA-MM-DD&hasta=AAAA-MM-DD[&categoria=Trabaj
 GET             /api/exportar/tareas.csv    /api/exportar/eventos.csv
 POST            /api/tareas/<id>/subtareas   PUT/DELETE /api/subtareas/<id>   {"completada": true}
 POST/PUT        /api/tareas  {"dependencias": [{"tipo": "tarea"|"subtarea", "id": 7}]}   DELETE /api/dependencias/<id>
+POST            /api/tareas/<id>/comentarios   PUT/DELETE /api/comentarios/<id>
 POST            /api/respaldo
 ```
 

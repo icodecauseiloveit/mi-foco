@@ -314,6 +314,9 @@ function tarjetaTarea(t, { compacta = false } = {}) {
     chips.push(`<span class="chip ${t.entregable_listo ? 'verde' : ''}" title="Entregable: ${esc(t.entregable)}">📦 ${t.entregable_listo ? 'Entregable listo' : 'Entregable pendiente'}</span>`);
   }
   chips.push(chipsDependencia(t));
+  if (t.comentarios_total) {
+    chips.push(`<button type="button" class="chip chip-coment" data-detalle="${t.id}" data-ir-comentarios title="Último comentario: ${esc(fmtFecha(t.ultimo_comentario))}">💬 ${t.comentarios_total}</button>`);
+  }
   if (t.tiempo_real_min > 0 || t.estimado_min) {
     const real = fmtMin(t.tiempo_real_min);
     const est = t.estimado_min ? ` / ${fmtMin(t.estimado_min)}` : '';
@@ -329,6 +332,7 @@ function tarjetaTarea(t, { compacta = false } = {}) {
       ${t.subtareas_total && expandida ? checklistSubtareas(t) : ''}
     </div>
     <div class="t-acciones">${acc.join('')}
+      <button class="ico" data-detalle="${t.id}" data-ir-comentarios title="Comentarios">💬</button>
       <button class="ico" data-editar="${t.id}" title="Editar">✎</button>
       ${compacta ? '' : `${abierta(t) ? `<button class="ico" data-accion="cancelar" data-id="${t.id}" title="Cancelar">⊘</button>` : ''}
       <button class="ico" data-eliminar="${t.id}" title="Eliminar">🗑</button>`}
@@ -798,7 +802,22 @@ function formFechaCompletado(t, desdeDetalle = false, sub = null) {
     </form>`);
 }
 
-async function verDetalle(id) {
+function bloqueComentarios(t) {
+  const lista = t.comentarios.map((c) => `<li data-comentario="${c.id}">
+      <div class="coment-texto">${esc(c.texto)}</div>
+      <div class="coment-meta">${fmtFecha(c.creado_en)}${c.editado_en ? ` · editado ${fmtFecha(c.editado_en)}` : ''}
+        <button type="button" class="ico" data-editar-comentario="${c.id}" data-tarea="${t.id}" title="Editar">✎</button>
+        <button type="button" class="ico" data-borrar-comentario="${c.id}" data-tarea="${t.id}" title="Borrar">🗑</button></div>
+    </li>`).join('');
+  return `<h3 id="sec-comentarios" style="margin:18px 0 8px">Comentarios <small class="sutil">${t.comentarios.length || ''}</small></h3>
+    ${t.comentarios.length ? `<ul class="comentarios">${lista}</ul>` : '<p class="sutil" style="margin:0 0 8px">Sin comentarios todavía.</p>'}
+    <form id="f-comentario" data-tarea="${t.id}" class="f-comentario">
+      <textarea name="texto" rows="2" maxlength="5000" placeholder="Escribe un comentario: avances, acuerdos, bloqueos… (Ctrl + Enter para guardar)"></textarea>
+      <button class="primario">Comentar</button>
+    </form>`;
+}
+
+async function verDetalle(id, irComentarios = false) {
   const t = await api(`/api/tareas/${id}`);
   const filas = [
     ['Estado', ESTADOS[t.estado]], ['Prioridad', PRIORIDADES[t.prioridad].split(' (')[0]], ['Categoría', esc(t.categoria)],
@@ -824,10 +843,15 @@ async function verDetalle(id) {
       ${t.frena_a.length ? `<div class="sutil" style="margin:10px 0 6px">Estas tareas te esperan:</div><ul class="deps">${t.frena_a.map((x) => `<li><span>⛓</span>
           <a href="#" data-detalle="${x.id}">${esc(x.titulo)}</a></li>`).join('')}</ul>` : ''}` : ''}
     ${t.subtareas_total || abierta(t) ? `<h3 style="margin:18px 0 8px">Subtareas</h3><div data-detalle-subs="${t.id}">${barraAvance(t, false)}${checklistSubtareas(t)}</div>` : ''}
+    ${bloqueComentarios(t)}
     <h3 style="margin:18px 0 12px">Línea de tiempo</h3>
     <ul class="timeline">${t.eventos.map((e) => `<li class="ev-${e.tipo}"><b>${EVENTOS[e.tipo] || esc(e.tipo)}</b>
       <div class="cuando">${fmtFecha(e.momento)}</div>${e.detalle ? `<div class="sutil">${esc(e.detalle)}</div>` : ''}</li>`).join('')}</ul>
     <div class="botones"><button class="secundario" data-editar="${t.id}">✎ Editar</button><button class="primario" data-cerrar>Cerrar</button></div>`);
+  if (irComentarios) {
+    $('#sec-comentarios').scrollIntoView({ block: 'start' });
+    $('#f-comentario textarea').focus();
+  }
 }
 
 /* ─────────── acciones ─────────── */
@@ -926,6 +950,16 @@ document.addEventListener('submit', async (e) => {
       await render();
       const otra = enModal ? $('#modal-caja .f-subtarea input') : $(`#vista .f-subtarea[data-tarea="${t.id}"] input`);
       if (otra) otra.focus();
+    } else if (f.id === 'f-comentario') {
+      const texto = f.texto.value.trim();
+      if (!texto) return;
+      await api(`/api/tareas/${f.dataset.tarea}/comentarios`, { method: 'POST', body: { texto } });
+      toast('💬 Comentario guardado', 'exito');
+      await verDetalle(Number(f.dataset.tarea), true);
+      render();
+    } else if (f.classList.contains('f-editar-coment')) {
+      await api(`/api/comentarios/${f.dataset.id}`, { method: 'PUT', body: { texto: f.texto.value } });
+      await verDetalle(Number(f.dataset.tarea), true);
     } else if (f.id === 'f-fecha-comp' && f.dataset.subtarea) {
       const r = await api(`/api/subtareas/${f.dataset.subtarea}`, { method: 'PUT', body: { completada_en: f.completada_en.value } });
       const sub = r.subtareas.find((x) => x.id === Number(f.dataset.subtarea));
@@ -976,7 +1010,7 @@ document.addEventListener('click', async (e) => {
     if (d.vista) { $('#panel-alertas').classList.add('oculto'); st.vista = d.vista; render(); return; }
     if (d.cerrar !== undefined) return cerrarModal();
     if (d.accion) return accionTarea(Number(d.id), d.accion);
-    if (d.detalle) { e.preventDefault(); $('#panel-alertas').classList.add('oculto'); return verDetalle(Number(d.detalle)); }
+    if (d.detalle) { e.preventDefault(); $('#panel-alertas').classList.add('oculto'); return verDetalle(Number(d.detalle), d.irComentarios !== undefined); }
     if (d.editar) {
       let t = st.tareas.find((x) => x.id === Number(d.editar));
       if (!t) t = await api(`/api/tareas/${d.editar}`);
@@ -1014,6 +1048,22 @@ document.addEventListener('click', async (e) => {
       const id = Number(d.fechaCompletado);
       const t = st.tareas.find((x) => x.id === id) || await api(`/api/tareas/${id}`);
       return formFechaCompletado(t, d.desdeDetalle !== undefined);
+    }
+    if (d.editarComentario) {
+      const li = el.closest('li');
+      const texto = li.querySelector('.coment-texto').textContent;
+      li.innerHTML = `<form class="f-editar-coment f-comentario" data-id="${d.editarComentario}" data-tarea="${d.tarea}">
+        <textarea name="texto" rows="3" maxlength="5000">${esc(texto)}</textarea>
+        <div class="botones" style="margin:0"><button type="button" class="secundario" data-cancelar-coment="${d.tarea}">Cancelar</button><button class="primario">Guardar</button></div></form>`;
+      const ta = li.querySelector('textarea'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+      return;
+    }
+    if (d.cancelarComent) return verDetalle(Number(d.cancelarComent), true);
+    if (d.borrarComentario) {
+      if (!confirm('¿Borrar este comentario?')) return;
+      await api(`/api/comentarios/${d.borrarComentario}`, { method: 'DELETE' });
+      await verDetalle(Number(d.tarea), true);
+      return render();
     }
     if (d.fechaSubtarea) {
       const t = await api(`/api/tareas/${d.tarea}`);
@@ -1142,6 +1192,13 @@ document.addEventListener('input', (e) => {
 });
 
 $('#modal').addEventListener('mousedown', (e) => { if (e.target.id === 'modal') cerrarModal(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.closest && e.target.closest('.f-comentario')) {
+    e.preventDefault();
+    e.target.closest('form').requestSubmit();
+  }
+});
+
 /* Editor de subtareas: Enter crea la siguiente, Backspace en una vacía la borra, pegar varias líneas crea varias. */
 document.addEventListener('keydown', (e) => {
   const inp = e.target;

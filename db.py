@@ -116,6 +116,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_dependencias
 CREATE INDEX IF NOT EXISTS ix_dep_tarea ON dependencias(depende_tarea_id);
 CREATE INDEX IF NOT EXISTS ix_dep_subtarea ON dependencias(depende_subtarea_id);
 
+-- Notas libres sobre una tarea (avances, acuerdos, bloqueos…).
+CREATE TABLE IF NOT EXISTS comentarios (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    tarea_id    INTEGER NOT NULL REFERENCES tareas(id) ON DELETE CASCADE,
+    texto       TEXT NOT NULL,
+    creado_en   TEXT NOT NULL,
+    editado_en  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_comentarios_tarea ON comentarios(tarea_id);
+
 -- Catálogos reutilizables al crear tareas.
 CREATE TABLE IF NOT EXISTS categorias (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
