@@ -168,6 +168,26 @@ input:focus, select:focus, textarea:focus { border-color: var(--acento); box-sha
 .progreso { height: 10px; background: var(--superficie-2); border-radius: 999px; overflow: hidden; border: 1px solid var(--borde); }
 .progreso > div { height: 100%; background: linear-gradient(90deg, var(--acento), #a855f7); border-radius: 999px; transition: width .4s; }
 
+/* Íconos de categoría */
+.cat-ico { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: 5px; vertical-align: -3px; font-size: .9rem; line-height: 1; border-radius: 4px; object-fit: cover; flex: none; }
+.chip-cat { display: inline-flex; align-items: center; }
+.chip .cat-ico { width: 14px; height: 14px; font-size: .78rem; margin-right: 4px; vertical-align: 0; }
+.cat-ico.mediano { width: 28px; height: 28px; font-size: 1.15rem; margin-right: 0; border-radius: 7px; }
+.cat-ico.grande { width: 64px; height: 64px; font-size: 2.4rem; margin-right: 0; border-radius: 14px; }
+.vacio-ico { background: var(--superficie-2); border: 1px dashed var(--borde); color: var(--sutil); }
+.btn-cat-ico { border: 0; background: none; padding: 0; margin-right: 8px; cursor: pointer; vertical-align: middle; border-radius: 8px; }
+.btn-cat-ico:hover .cat-ico { outline: 2px solid var(--acento); outline-offset: 1px; }
+.hbar span .cat-ico { vertical-align: -2px; }
+.ico-actual { display: flex; align-items: center; gap: 14px; background: var(--superficie-2); border-radius: 14px; padding: 12px 14px; }
+.sub-h { font-size: .9rem; margin: 18px 0 8px; }
+.emojis { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 6px; }
+.emoji-btn { font-size: 1.35rem; height: 40px; border: 1px solid var(--borde); background: var(--superficie); border-radius: 10px; cursor: pointer; }
+.emoji-btn:hover { border-color: var(--acento); transform: scale(1.08); }
+.emoji-btn.sel { border: 2px solid var(--acento); background: var(--acento-suave); }
+.subir { position: relative; display: flex !important; align-items: center; justify-content: center; border: 2px dashed var(--borde); border-radius: 12px; padding: 16px; cursor: pointer; color: var(--texto) !important; margin: 0 !important; }
+.subir:hover { border-color: var(--acento); background: var(--acento-suave); }
+.subir input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
 /* Subtareas */
 .tarea:has(.subtareas) { align-items: flex-start; }
 .avance { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: .8rem; color: var(--sutil); max-width: 520px; }

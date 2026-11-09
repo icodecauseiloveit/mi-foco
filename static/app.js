@@ -91,6 +91,73 @@ async function cargarTareas() {
 }
 async function cargarMetas() { st.metas = await api('/api/metas'); }
 async function cargarCatalogos() { st.catalogos = await api('/api/catalogos'); }
+
+/* Íconos de categoría: imagen propia > emoji > nada. */
+const infoCategoria = (nombre) => st.catalogos.categorias.find((c) => c.nombre.toLowerCase() === String(nombre || '').toLowerCase());
+function iconoCategoria(nombre, clase = 'cat-ico') {
+  const c = infoCategoria(nombre);
+  if (!c) return '';
+  if (c.imagen_url) return `<img class="${clase}" src="${c.imagen_url}" alt="" loading="lazy">`;
+  if (c.icono) return `<span class="${clase}">${esc(c.icono)}</span>`;
+  return '';
+}
+/** Para <option>, que no admite imágenes: solo el emoji. */
+const prefijoEmoji = (nombre) => { const c = infoCategoria(nombre); return c && c.icono && !c.imagen_url ? c.icono + ' ' : ''; };
+
+const EMOJIS = ['📁', '💼', '🏭', '🛢️', '⚙️', '🛠️', '🔧', '🏗️', '📊', '📈', '📋', '📝', '📅', '⏰', '💻', '🐍',
+  '🗄️', '🔌', '📚', '🎓', '🧠', '💡', '🔍', '📧', '💬', '📞', '🤝', '👥', '🏠', '👨‍👩‍👧', '🧹', '🛒', '💰',
+  '🧾', '🏦', '❤️', '🏃', '🍎', '✈️', '🚗', '🎯', '🚀', '⭐', '🔥', '✅', '⚠️', '🔒', '🌱', '🎨', '🎵'];
+
+function formIconoCategoria(c) {
+  const actual = iconoCategoria(c.nombre, 'cat-ico grande') || '<span class="cat-ico grande vacio-ico">?</span>';
+  abrirModal(`<h2>Ícono de «${esc(c.nombre)}»</h2>
+    <div class="ico-actual">${actual}<div><b>${esc(c.nombre)}</b><br><span class="sutil">${c.imagen_url ? 'Imagen propia' : c.icono ? 'Emoji' : 'Sin ícono'}</span></div></div>
+    <h3 class="sub-h">Elige un emoji</h3>
+    <div class="emojis">${EMOJIS.map((e) => `<button type="button" class="emoji-btn ${c.icono === e && !c.imagen_url ? 'sel' : ''}" data-poner-icono="${e}" data-cat="${c.id}">${e}</button>`).join('')}</div>
+    <form id="f-emoji" data-cat="${c.id}" class="rapida" style="margin-top:10px">
+      <input name="icono" maxlength="16" placeholder="…o escribe/pega cualquier emoji (Win + . abre el selector)" autocomplete="off">
+      <button class="secundario">Usar</button>
+    </form>
+    <h3 class="sub-h">O sube una imagen</h3>
+    <label class="subir">
+      <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" data-subir-imagen="${c.id}">
+      <span>📤 Seleccionar imagen (PNG, JPG, WEBP o GIF)</span>
+    </label>
+    <p class="ayuda">Se recorta al centro en cuadrado y se reduce a 96×96 px. Se guarda dentro de la base de datos, así que viaja con tus respaldos.</p>
+    <div class="botones">
+      ${c.icono || c.imagen_url ? `<button type="button" class="secundario" data-quitar-icono="${c.id}">Quitar ícono</button>` : ''}
+      <button type="button" class="primario" data-volver-catalogos>Listo</button>
+    </div>`);
+}
+
+function imagenA96(file, lado = 96) {
+  return new Promise((resolve, reject) => {
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type)) return reject(new Error('Usa una imagen PNG, JPG, WEBP o GIF.'));
+    if (file.size > 8 * 1024 * 1024) return reject(new Error('La imagen supera 8 MB.'));
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const lienzo = document.createElement('canvas');
+      lienzo.width = lienzo.height = lado;
+      const ctx = lienzo.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      const s = Math.min(img.naturalWidth, img.naturalHeight);
+      ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, lado, lado);
+      URL.revokeObjectURL(url);
+      resolve(lienzo.toDataURL('image/png'));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo leer la imagen.')); };
+    img.src = url;
+  });
+}
+
+async function guardarIcono(cid, cuerpo, msg) {
+  st.catalogos = await api(`/api/categorias/${cid}`, { method: 'PUT', body: cuerpo });
+  const c = st.catalogos.categorias.find((x) => x.id === cid);
+  toast(msg, 'exito');
+  if (c) formIconoCategoria(c);
+  render();
+}
 /** Categorías guardadas (las más usadas primero) + cualquiera que aparezca en tareas. */
 function categorias() {
   const vistas = new Set();
@@ -154,7 +221,7 @@ function tarjetaTarea(t) {
   if (abierta(t)) acc.push(`<button class="mini ok" data-accion="completar" data-id="${t.id}">✓ Completar</button>`);
   if (['completada', 'cancelada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="reabrir" data-id="${t.id}">↺ Reabrir</button>`);
 
-  const chips = [`<span class="chip">${esc(t.categoria)}</span>`];
+  const chips = [`<span class="chip chip-cat">${iconoCategoria(t.categoria)}${esc(t.categoria)}</span>`];
   if (t.estado !== 'pendiente') chips.push(`<span class="chip ${t.estado === 'en_progreso' ? 'azul' : ''}">${ESTADOS[t.estado]}</span>`);
   if (t.meta_nombre) chips.push(`<span class="chip azul">◆ ${esc(t.meta_nombre)}</span>`);
   chips.push(etiquetaLimite(t));
@@ -198,7 +265,7 @@ function graficoBarras(datos, formato = (v) => v, clase = '') {
 function barrasH(datos, formato = (v) => v) {
   if (!datos.length) return '<div class="vacio">Sin datos en el periodo.</div>';
   const max = Math.max(1, ...datos.map((d) => d.valor));
-  return datos.map((d) => `<div class="hbar"><span title="${esc(d.etiqueta)}">${esc(d.etiqueta)}</span>
+  return datos.map((d) => `<div class="hbar"><span title="${esc(d.etiqueta)}">${d.html || esc(d.etiqueta)}</span>
     <div class="hbar-pista"><div style="width:${(d.valor / max * 100).toFixed(1)}%;${d.color ? 'background:' + d.color : ''}"></div></div>
     <b>${esc(formato(d.valor))}</b></div>`).join('');
 }
@@ -302,7 +369,7 @@ async function vistaTareas() {
         ${Object.entries(ESTADOS).map(([k, v]) => opt(k, v, f.estado)).join('')}${opt('todas', 'Todas', f.estado)}
       </select>
       <select id="f-prioridad">${opt('', 'Toda prioridad', f.prioridad)}${Object.keys(PRIORIDADES).map((p) => opt(p, 'Prioridad ' + p, f.prioridad)).join('')}</select>
-      <select id="f-categoria">${opt('', 'Toda categoría', f.categoria)}${categorias().map((c) => opt(c, c, f.categoria)).join('')}</select>
+      <select id="f-categoria">${opt('', 'Toda categoría', f.categoria)}${categorias().map((c) => opt(c, prefijoEmoji(c) + c, f.categoria)).join('')}</select>
     </div>
     <div id="lista-tareas"></div>`;
 }
@@ -340,7 +407,7 @@ function tarjetaMeta(m) {
 }
 
 async function vistaMetas() {
-  await Promise.all([cargarMetas(), cargarTareas()]);
+  await Promise.all([cargarMetas(), cargarTareas(), cargarCatalogos()]);
   const activas = st.metas.filter((m) => m.estado === 'activa');
   const horas = st.metas.reduce((s, m) => s + m.horas_acumuladas, 0);
   const prom = activas.length ? Math.round(activas.reduce((s, m) => s + m.progreso_pct, 0) / activas.length) : 0;
@@ -360,7 +427,7 @@ async function vistaMetas() {
 }
 
 async function vistaRendimiento() {
-  const s = await api(`/api/estadisticas?dias=${st.periodo}`);
+  const [s] = await Promise.all([api(`/api/estadisticas?dias=${st.periodo}`), cargarCatalogos()]);
   const pct = (v) => (v == null ? '—' : v + '%');
   const serieComp = s.serie.map((d) => ({ etiqueta: fmtFecha(d.fecha, false), corta: d.fecha.slice(8) + '/' + d.fecha.slice(5, 7), valor: d.completadas }));
   const serieFoco = s.serie.map((d) => ({ etiqueta: fmtFecha(d.fecha, false), corta: d.fecha.slice(8) + '/' + d.fecha.slice(5, 7), valor: d.minutos_foco + d.minutos_aprendizaje }));
@@ -412,7 +479,7 @@ async function vistaRendimiento() {
       <div class="tarjeta"><h3>Completadas por prioridad <small>abiertas entre paréntesis</small></h3>
         ${barrasH(s.por_prioridad.map((p) => ({ etiqueta: `${p.prioridad} (${p.abiertas})`, valor: p.completadas, color: colores[p.prioridad] })))}</div>
       <div class="tarjeta"><h3>Completadas por categoría</h3>
-        ${barrasH(s.por_categoria.map((c) => ({ etiqueta: c.categoria, valor: c.completadas })))}</div>
+        ${barrasH(s.por_categoria.map((c) => ({ etiqueta: c.categoria, html: iconoCategoria(c.categoria) + esc(c.categoria), valor: c.completadas })))}</div>
     </div>`;
 }
 
@@ -459,7 +526,7 @@ function selectorCategoria(actual = 'General', nombre = 'categoria') {
   const lista = categorias();
   if (actual && !lista.some((c) => c.toLowerCase() === actual.toLowerCase())) lista.unshift(actual);
   return `<select name="${nombre}" data-selector-categoria>
-      ${lista.map((c) => `<option value="${esc(c)}" ${c.toLowerCase() === (actual || '').toLowerCase() ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+      ${lista.map((c) => `<option value="${esc(c)}" ${c.toLowerCase() === (actual || '').toLowerCase() ? 'selected' : ''}>${esc(prefijoEmoji(c) + c)}</option>`).join('')}
       <option value="__nueva__">＋ Nueva categoría…</option>
     </select>
     <input name="${nombre}_nueva" class="oculto" placeholder="Nombre de la nueva categoría" maxlength="60">`;
@@ -572,8 +639,11 @@ async function gestionarCatalogos(pestana = 'categorias') {
   const cuerpo = pestana === 'categorias'
     ? `<form id="f-cat-nueva" class="rapida" style="margin-bottom:12px"><input name="nombre" placeholder="Nueva categoría (ej. Paradas PHD)" maxlength="60" required><button class="primario">Agregar</button></form>
        <table><thead><tr><th>Categoría</th><th>Tareas</th><th>Usos</th><th></th></tr></thead><tbody>
-       ${cats.map((c) => `<tr><td><b>${esc(c.nombre)}</b></td><td>${c.tareas}</td><td>${c.usos}</td>
+       ${cats.map((c) => `<tr><td>
+           <button class="btn-cat-ico" data-editar-icono="${c.id}" title="Cambiar ícono o imagen">${iconoCategoria(c.nombre, 'cat-ico mediano') || '<span class="cat-ico mediano vacio-ico">＋</span>'}</button>
+           <b>${esc(c.nombre)}</b></td><td>${c.tareas}</td><td>${c.usos}</td>
          <td style="text-align:right;white-space:nowrap">
+           <button class="ico" data-editar-icono="${c.id}" title="Ícono o imagen">🖼</button>
            <button class="ico" data-renombrar-cat="${c.id}" data-nombre="${esc(c.nombre)}" title="Renombrar (actualiza las tareas)">✎</button>
            ${c.nombre.toLowerCase() === 'general' ? '' : `<button class="ico" data-borrar-cat="${c.id}" data-nombre="${esc(c.nombre)}" data-tareas="${c.tareas}" title="Eliminar">🗑</button>`}
          </td></tr>`).join('')}</tbody></table>`
@@ -686,6 +756,10 @@ document.addEventListener('submit', async (e) => {
       await render();
       const otra = enModal ? $('#modal-caja .f-subtarea input') : $(`#vista .f-subtarea[data-tarea="${t.id}"] input`);
       if (otra) otra.focus();
+    } else if (f.id === 'f-emoji') {
+      const icono = f.icono.value.trim();
+      if (!icono) return;
+      await guardarIcono(Number(f.dataset.cat), { icono }, `Ícono ${icono} asignado`);
     } else if (f.id === 'f-cat-nueva') {
       st.catalogos = await api('/api/categorias', { method: 'POST', body: { nombre: f.nombre.value } });
       gestionarCatalogos('categorias');
@@ -754,6 +828,10 @@ document.addEventListener('click', async (e) => {
     }
     if (d.borrarHito) { await api(`/api/hitos/${d.borrarHito}`, { method: 'DELETE' }); return render(); }
     if (d.tabCatalogo) return gestionarCatalogos(d.tabCatalogo);
+    if (d.editarIcono) return formIconoCategoria(st.catalogos.categorias.find((c) => c.id === Number(d.editarIcono)));
+    if (d.ponerIcono) return guardarIcono(Number(d.cat), { icono: d.ponerIcono }, `Ícono ${d.ponerIcono} asignado`);
+    if (d.quitarIcono) return guardarIcono(Number(d.quitarIcono), { quitar_icono: true }, 'Ícono quitado');
+    if (d.volverCatalogos !== undefined) return gestionarCatalogos('categorias');
     if (d.agregarSub !== undefined) { $('.sub-input', agregarFilaSub()).focus(); return; }
     if (d.quitarSub !== undefined) {
       const fila = el.closest('.sub-fila');
@@ -788,6 +866,13 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', async (e) => {
   const el = e.target;
+  if (el.dataset.subirImagen && el.files && el.files[0]) {
+    try {
+      const dataUrl = await imagenA96(el.files[0]);
+      await guardarIcono(Number(el.dataset.subirImagen), { imagen: dataUrl }, 'Imagen guardada');
+    } catch (err) { toast(err.message, 'error'); }
+    return;
+  }
   if (el.dataset.subtarea) {
     try {
       const t = await api(`/api/subtareas/${el.dataset.subtarea}`, { method: 'PUT', body: { completada: el.checked } });

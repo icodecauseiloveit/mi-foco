@@ -107,7 +107,11 @@ CREATE TABLE IF NOT EXISTS categorias (
     nombre      TEXT NOT NULL UNIQUE COLLATE NOCASE,
     usos        INTEGER DEFAULT 0,
     creada_en   TEXT NOT NULL,
-    usada_en    TEXT
+    usada_en    TEXT,
+    icono       TEXT,          -- emoji
+    imagen      BLOB,          -- imagen propia (PNG 96x96 generada en el navegador)
+    imagen_tipo TEXT,
+    actualizada_en TEXT
 );
 
 CREATE TABLE IF NOT EXISTS descripciones (
@@ -146,10 +150,21 @@ def conexion():
         conn.close()
 
 
+def _agregar_columnas(conn, tabla, columnas):
+    existentes = {r["name"] for r in conn.execute(f"PRAGMA table_info({tabla})")}
+    for nombre, tipo in columnas.items():
+        if nombre not in existentes:
+            conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {nombre} {tipo}")
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with conexion() as conn:
         conn.executescript(SCHEMA)
+        # Migraciones: columnas agregadas en versiones posteriores.
+        _agregar_columnas(conn, "categorias", {
+            "icono": "TEXT", "imagen": "BLOB", "imagen_tipo": "TEXT", "actualizada_en": "TEXT",
+        })
         # Primera vez con catálogos: se cargan con lo que ya existe en las tareas.
         if conn.execute("SELECT COUNT(*) FROM categorias").fetchone()[0] == 0:
             conn.execute(

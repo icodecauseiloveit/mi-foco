@@ -4,9 +4,12 @@ Ejecutar:  python app.py            (abre el navegador en http://127.0.0.1:5050)
            python app.py --sin-navegador --puerto 8080
 """
 import argparse
+import base64
+import binascii
 import csv
 import io
 import os
+import re
 import sqlite3
 import threading
 import webbrowser
@@ -539,11 +542,38 @@ def api_eliminar_subtarea(sid):
 
 
 # ───────────────────────── catálogos: categorías y descripciones ─────────────────────────
+FIRMAS_IMAGEN = {"image/png": b"\x89PNG", "image/jpeg": b"\xff\xd8\xff", "image/gif": b"GIF8", "image/webp": b"RIFF"}
+MAX_IMAGEN = 300_000  # bytes; el navegador la reduce a 96x96, normalmente pesa < 20 KB
+
+
+def decodificar_imagen(data_url):
+    """Valida un data URL de imagen (sin SVG) y devuelve (tipo, bytes)."""
+    m = re.match(r"^data:(image/[a-z]+);base64,([A-Za-z0-9+/=\s]+)$", str(data_url or ""))
+    if not m or m.group(1) not in FIRMAS_IMAGEN:
+        raise ValueError("Formato no admitido: usa PNG, JPG, WEBP o GIF.")
+    try:
+        raw = base64.b64decode(m.group(2), validate=False)
+    except (binascii.Error, ValueError):
+        raise ValueError("La imagen está dañada.")
+    if len(raw) > MAX_IMAGEN:
+        raise ValueError("La imagen es muy pesada (máx. 300 KB).")
+    if not raw.startswith(FIRMAS_IMAGEN[m.group(1)]):
+        raise ValueError("El archivo no es una imagen válida.")
+    return m.group(1), raw
+
+
 def catalogos(conn):
-    cats = [dict(r) for r in conn.execute(
-        "SELECT c.id, c.nombre, c.usos, c.usada_en, "
-        "(SELECT COUNT(*) FROM tareas t WHERE t.eliminada=0 AND t.categoria = c.nombre COLLATE NOCASE) AS tareas "
-        "FROM categorias c ORDER BY c.usos DESC, c.nombre COLLATE NOCASE")]
+    cats = []
+    for r in conn.execute(
+            "SELECT c.id, c.nombre, c.usos, c.usada_en, c.icono, c.actualizada_en, "
+            "(c.imagen IS NOT NULL) AS tiene_imagen, "
+            "(SELECT COUNT(*) FROM tareas t WHERE t.eliminada=0 AND t.categoria = c.nombre COLLATE NOCASE) AS tareas "
+            "FROM categorias c ORDER BY c.usos DESC, c.nombre COLLATE NOCASE"):
+        c = dict(r)
+        tiene = c.pop("tiene_imagen")
+        version = re.sub(r"\D", "", c.get("actualizada_en") or "") or "0"
+        c["imagen_url"] = f"/api/categorias/{c['id']}/imagen?v={version}" if tiene else None
+        cats.append(c)
     descs = [dict(r) for r in conn.execute(
         "SELECT id, texto, usos, usada_en FROM descripciones ORDER BY usada_en DESC, usos DESC")]
     return {"categorias": cats, "descripciones": descs}
@@ -566,24 +596,62 @@ def api_crear_categoria():
 
 
 @app.put("/api/categorias/<int:cid>")
-def api_renombrar_categoria(cid):
-    """Renombra la categoría y la actualiza en todas las tareas que la usan."""
-    nuevo = (body().get("nombre") or "").strip()[:60]
-    if not nuevo:
-        raise ValueError("Escribe el nuevo nombre.")
+def api_editar_categoria(cid):
+    """Cambia el ícono/imagen y/o renombra la categoría (actualizando todas sus tareas).
+
+    Cuerpo: {"icono": "🛠️"} · {"imagen": "data:image/png;base64,..."} · {"quitar_icono": true} · {"nombre": "..."}
+    """
+    d = body()
+    ahora = db.ahora()
     with db.conexion() as conn:
         c = conn.execute("SELECT * FROM categorias WHERE id=?", (cid,)).fetchone()
         if not c:
             abort(404, "Categoría no encontrada.")
-        otra = conn.execute("SELECT id FROM categorias WHERE nombre=? COLLATE NOCASE AND id<>?", (nuevo, cid)).fetchone()
-        if otra:  # fusionar con la existente
-            conn.execute("UPDATE categorias SET usos = usos + ? WHERE id=?", (c["usos"], otra["id"]))
-            conn.execute("DELETE FROM categorias WHERE id=?", (cid,))
-            nuevo = nombre_categoria(conn, nuevo)
-        else:
-            conn.execute("UPDATE categorias SET nombre=? WHERE id=?", (nuevo, cid))
-        conn.execute("UPDATE tareas SET categoria=? WHERE categoria=? COLLATE NOCASE", (nuevo, c["nombre"]))
+
+        if d.get("quitar_icono"):
+            conn.execute("UPDATE categorias SET icono=NULL, imagen=NULL, imagen_tipo=NULL, actualizada_en=? WHERE id=?",
+                         (ahora, cid))
+        elif d.get("imagen"):
+            tipo, raw = decodificar_imagen(d["imagen"])
+            conn.execute("UPDATE categorias SET imagen=?, imagen_tipo=?, actualizada_en=? WHERE id=?",
+                         (raw, tipo, ahora, cid))
+        elif "icono" in d:
+            icono = (d.get("icono") or "").strip()[:16] or None
+            # Elegir un emoji reemplaza la imagen, para que se vea lo que se acaba de elegir.
+            conn.execute("UPDATE categorias SET icono=?, imagen=NULL, imagen_tipo=NULL, actualizada_en=? WHERE id=?",
+                         (icono, ahora, cid))
+
+        if "nombre" in d:
+            nuevo = (d.get("nombre") or "").strip()[:60]
+            if not nuevo:
+                raise ValueError("Escribe el nuevo nombre.")
+            if nuevo != c["nombre"]:
+                otra = conn.execute("SELECT * FROM categorias WHERE nombre=? COLLATE NOCASE AND id<>?",
+                                    (nuevo, cid)).fetchone()
+                if otra:  # fusionar con la existente (hereda el ícono si la otra no tiene)
+                    actual = conn.execute("SELECT * FROM categorias WHERE id=?", (cid,)).fetchone()
+                    if not otra["icono"] and otra["imagen"] is None:
+                        conn.execute("UPDATE categorias SET icono=?, imagen=?, imagen_tipo=?, actualizada_en=? WHERE id=?",
+                                     (actual["icono"], actual["imagen"], actual["imagen_tipo"], ahora, otra["id"]))
+                    conn.execute("UPDATE categorias SET usos = usos + ? WHERE id=?", (c["usos"], otra["id"]))
+                    conn.execute("DELETE FROM categorias WHERE id=?", (cid,))
+                    nuevo = otra["nombre"]
+                else:
+                    conn.execute("UPDATE categorias SET nombre=?, actualizada_en=? WHERE id=?", (nuevo, ahora, cid))
+                conn.execute("UPDATE tareas SET categoria=? WHERE categoria=? COLLATE NOCASE", (nuevo, c["nombre"]))
         return jsonify(catalogos(conn))
+
+
+@app.get("/api/categorias/<int:cid>/imagen")
+def api_imagen_categoria(cid):
+    with db.conexion() as conn:
+        r = conn.execute("SELECT imagen, imagen_tipo FROM categorias WHERE id=?", (cid,)).fetchone()
+    if not r or r["imagen"] is None:
+        abort(404, "La categoría no tiene imagen.")
+    return Response(bytes(r["imagen"]), mimetype=r["imagen_tipo"] or "image/png", headers={
+        "Cache-Control": "public, max-age=31536000, immutable",  # la URL cambia (?v=) al reemplazarla
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.delete("/api/categorias/<int:cid>")

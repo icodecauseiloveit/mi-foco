@@ -27,7 +27,7 @@ python app.py                   # opciones: --puerto 8080  --sin-navegador
 |---|---|
 | **Hoy** | Frase del día (principio + práctica accionable), tu 🐸 *rana* del día, KPIs, captura rápida, tareas en curso, vencidas/por vencer y otras A. |
 | **Tareas** | CRUD completo, prioridad **ABCDE**, categoría, fecha límite, tiempo estimado, vínculo a una meta, filtros y búsqueda. Iniciar / pausar / completar / reabrir / cancelar. |
-| **Categorías y descripciones** | Se guardan solas en la base cada vez que las usas. Al crear una tarea eliges la categoría de una lista (o "＋ Nueva categoría…") y puedes cargar una descripción guardada. Desde *🏷 Categorías y descripciones* (barra lateral) agregas, renombras (actualiza todas sus tareas) o quitas. |
+| **Categorías y descripciones** | Se guardan solas en la base cada vez que las usas. Al crear una tarea eliges la categoría de una lista (o "＋ Nueva categoría…") y puedes cargar una descripción guardada. Desde *🏷 Categorías y descripciones* (barra lateral) agregas, renombras (actualiza todas sus tareas) o quitas. Cada categoría puede llevar un **emoji o una imagen propia** (se recorta a 96×96 y se guarda en la base), que se muestra en las tareas, filtros y estadísticas. |
 | **Subtareas** | Al crear o editar una tarea agregas subtareas (Enter agrega otra; puedes pegar una lista). Cada una se marca por separado y la tarea muestra su avance (1 de 3 = 33 %). Cada marca queda en el historial con fecha y hora. Al completar la última te ofrece cerrar la tarea; si cierras la tarea con subtareas pendientes, te avisa cuáles faltan. |
 | **Cronómetro** | Cada *Iniciar → Pausar/Completar* crea una sesión de trabajo. **Una tarea a la vez**: al iniciar otra, la anterior se pausa sola. Si completas sin cronometrar te pregunta cuántos minutos le dedicaste. |
 | **Metas de aprendizaje** | Herramienta, nivel actual → objetivo (1‑5), horas objetivo, fecha, hitos con checklist y registro de práctica. El progreso combina horas y hitos; calcula el **ritmo semanal necesario**. Las horas de tareas vinculadas también suman. |
@@ -62,6 +62,7 @@ GET/POST        /api/tareas                 (?incluir_cerradas=1)
 GET/PUT/DELETE  /api/tareas/<id>
 POST            /api/tareas/<id>/accion     {"accion": "iniciar|pausar|completar|reabrir|cancelar", "minutos_manual": 30}
 GET             /api/catalogos   POST /api/categorias   PUT/DELETE /api/categorias/<id>
+GET             /api/categorias/<id>/imagen   PUT /api/categorias/<id>  {"icono": "🛠️"} | {"imagen": "data:image/png;base64,…"} | {"quitar_icono": true}
 POST            /api/descripciones           DELETE /api/descripciones/<id>
 GET/POST        /api/metas      PUT/DELETE /api/metas/<id>
 POST            /api/metas/<id>/hitos       PUT/DELETE /api/hitos/<id>
