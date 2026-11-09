@@ -538,6 +538,9 @@ def api_listar_tareas():
 def api_crear_tarea():
     d = body()
     campos = limpiar_tarea(d)
+    if d.get("duplicada_de") not in (None, ""):
+        campos["duplicada_de"] = int(d["duplicada_de"])
+    copiar_soporte_de = int(d["copiar_adjuntos_de"]) if d.get("copiar_adjuntos_de") not in (None, "", False) else None
     subtareas = limpiar_subtareas(d.get("subtareas")) or []
     dependencias = limpiar_dependencias(d.get("dependencias")) or []
     campos.setdefault("es_rana", 0)
@@ -568,6 +571,14 @@ def api_crear_tarea():
         if (d.get("entregable") or "").strip():
             definir_entregable(conn, tid, d["entregable"])
             detalle += f" · entregable: «{d['entregable'].strip()[:200]}»"
+        if campos.get("duplicada_de"):
+            orig = conn.execute("SELECT titulo FROM tareas WHERE id=?", (campos["duplicada_de"],)).fetchone()
+            if orig:
+                detalle += f" · duplicada de «{orig['titulo']}»"
+        if copiar_soporte_de:
+            n = copiar_adjuntos(conn, copiar_soporte_de, tid)
+            if n:
+                detalle += f" · {n} soporte(s) copiado(s)"
         if ya_completada:
             registrar_evento(conn, tid, "creada", None, "completada",
                              f"Registrada como ya completada · {detalle}", momento=campos["creada_en"])
@@ -585,6 +596,56 @@ def api_crear_tarea():
             agregadas, _ = sincronizar_dependencias(conn, tid, dependencias)
             registrar_evento(conn, tid, "dependencias", None, None, "Depende de " + ", ".join(agregadas))
         return jsonify(obtener_tarea(conn, tid)), 201
+
+
+def copiar_adjuntos(conn, origen, destino):
+    """Copia archivos (nuevo archivo en disco) y enlaces de una tarea a otra. Devuelve cuántos copió."""
+    import shutil
+    n, ahora = 0, db.ahora()
+    for a in conn.execute("SELECT * FROM adjuntos WHERE tarea_id=?", (origen,)).fetchall():
+        interno = None
+        if a["tipo"] == "archivo":
+            src = os.path.join(db.ADJUNTOS_DIR, a["archivo"] or "")
+            if not os.path.isfile(src):
+                continue
+            interno = f"{destino}_{uuid.uuid4().hex}{os.path.splitext(a['archivo'])[1]}"
+            shutil.copy2(src, os.path.join(db.ADJUNTOS_DIR, interno))
+        conn.execute("INSERT INTO adjuntos (tarea_id, tipo, nombre, url, archivo, tamano, mime, creado_en) "
+                     "VALUES (?,?,?,?,?,?,?,?)",
+                     (destino, a["tipo"], a["nombre"], a["url"], interno, a["tamano"], a["mime"], ahora))
+        n += 1
+    return n
+
+
+@app.get("/api/tareas/<int:tid>/duplicado")
+def api_preparar_duplicado(tid):
+    """Datos para precargar el formulario de una copia. No crea nada: la tarea se crea al guardar.
+    Copia título (+ número de copia), descripción, prioridad, categoría, fecha límite, estimado, meta,
+    rana, subtareas (sin marcar), entregable y dependencias. No copia comentarios ni historial."""
+    with db.conexion() as conn:
+        t = obtener_tarea(conn, tid)
+        raiz_id = t.get("duplicada_de") or tid
+        raiz = conn.execute("SELECT id, titulo FROM tareas WHERE id=?", (raiz_id,)).fetchone()
+        if not raiz:  # la original ya no existe en la base: esta tarea pasa a ser la raíz
+            raiz = conn.execute("SELECT id, titulo FROM tareas WHERE id=?", (tid,)).fetchone()
+        # Número de copia: cuántas veces se ha duplicado la original (incluye copias eliminadas, para no repetir)
+        n = conn.execute("SELECT COUNT(*) FROM tareas WHERE duplicada_de=?", (raiz["id"],)).fetchone()[0] + 1
+        titulo = f"{raiz['titulo']} {n}"
+        while conn.execute("SELECT 1 FROM tareas WHERE titulo=? AND eliminada=0", (titulo,)).fetchone():
+            n += 1
+            titulo = f"{raiz['titulo']} {n}"
+        n_adjuntos = conn.execute("SELECT COUNT(*) FROM adjuntos WHERE tarea_id=?", (tid,)).fetchone()[0]
+    return jsonify({
+        "titulo": titulo[:200], "numero_copia": n,
+        "descripcion": t["descripcion"], "prioridad": t["prioridad"], "categoria": t["categoria"],
+        "fecha_limite": t["fecha_limite"], "estimado_min": t["estimado_min"], "meta_id": t["meta_id"],
+        "es_rana": t["es_rana"],
+        "subtareas": [{"titulo": s["titulo"]} for s in t["subtareas"] if not s["es_entregable"]],
+        "entregable": t["entregable"],
+        "dependencias": [dict(d, completa=d["completa"]) for d in t["dependencias"]],
+        "duplicada_de": raiz["id"], "original": {"id": tid, "titulo": t["titulo"]},
+        "adjuntos_total": n_adjuntos,
+    })
 
 
 @app.get("/api/tareas/<int:tid>")

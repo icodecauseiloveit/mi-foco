@@ -338,7 +338,8 @@ function tarjetaTarea(t, { compacta = false } = {}) {
     <div class="t-acciones">${acc.join('')}
       <button class="ico" data-detalle="${t.id}" data-ir-comentarios title="Comentarios">💬</button>
       <button class="ico" data-editar="${t.id}" title="Editar">✎</button>
-      ${compacta ? '' : `${abierta(t) ? `<button class="ico" data-accion="cancelar" data-id="${t.id}" title="Cancelar">⊘</button>` : ''}
+      ${compacta ? '' : `<button class="ico" data-duplicar="${t.id}" title="Duplicar">⧉</button>
+      ${abierta(t) ? `<button class="ico" data-accion="cancelar" data-id="${t.id}" title="Cancelar">⊘</button>` : ''}
       <button class="ico" data-eliminar="${t.id}" title="Eliminar">🗑</button>`}
     </div>
   </article>`;
@@ -766,8 +767,12 @@ async function formTarea(t = {}) {
   await Promise.all([st.metas.length ? null : cargarMetas().catch(() => {}), cargarCatalogos().catch(() => {}),
     st.tareas.length ? null : cargarTareas().catch(() => {})]);
   const metas = st.metas.filter((m) => m.estado !== 'lograda' || m.id === t.meta_id);
-  abrirModal(`<h2>${t.id ? 'Editar' : 'Nueva'} tarea</h2>
-    <form id="f-tarea" data-id="${t.id || ''}">
+  const dup = t._duplicado;
+  abrirModal(`<h2>${dup ? '⧉ Duplicar tarea' : t.id ? 'Editar tarea' : 'Nueva tarea'}</h2>
+    ${dup ? `<p class="aviso-dup">Copia de «${esc(dup.original.titulo)}». Revisa y ajusta lo que necesites antes de guardar.
+      No se copian los comentarios ni el historial (eventos, tiempo trabajado, fechas de inicio y completado); las subtareas quedan sin marcar.</p>` : ''}
+    <form id="f-tarea" data-id="${t.id || ''}" ${dup ? `data-original="${dup.original.id}"` : ''}>
+      ${dup ? `<input type="hidden" name="duplicada_de" value="${dup.duplicada_de}">` : ''}
       <label>Título<input name="titulo" required maxlength="200" value="${esc(t.titulo || '')}"></label>
       <label class="campo-entregable">📦 Entregable <span class="ayuda">¿Qué debe existir para dar esta tarea por terminada? Se agrega como la última subtarea.</span>
         <input name="entregable" maxlength="200" value="${esc(t.entregable || '')}" placeholder="Ej. Programa actualizado enviado a los puntos focales" autocomplete="off"></label>
@@ -799,6 +804,7 @@ async function formTarea(t = {}) {
         <label>✅ Fecha de completado <span class="ayuda">(corrígela si la marcaste tarde)</span>
           <input type="datetime-local" name="completada_en" value="${esc((t.completada_en || '').slice(0, 16))}" max="${aLocalInput(new Date())}"></label>
       </div>` : ''}
+      ${dup && dup.adjuntos_total ? `<label class="check"><input type="checkbox" name="copiar_soporte" checked> 📎 Copiar también el soporte (${dup.adjuntos_total} archivo(s)/enlace(s))</label>` : ''}
       <label class="check"><input type="checkbox" name="es_rana" ${t.es_rana ? 'checked' : ''}> 🐸 Es mi “rana”: la tarea más importante y difícil, la hago primero</label>
       <div class="botones"><button type="button" class="secundario" data-cerrar>Cancelar</button><button class="primario">Guardar</button></div>
     </form>`);
@@ -984,7 +990,7 @@ async function verDetalle(id, ir = false) {
     <h3 style="margin:18px 0 12px">Línea de tiempo</h3>
     <ul class="timeline">${t.eventos.map((e) => `<li class="ev-${e.tipo}"><b>${EVENTOS[e.tipo] || esc(e.tipo)}</b>
       <div class="cuando">${fmtFecha(e.momento)}</div>${e.detalle ? `<div class="sutil">${esc(e.detalle)}</div>` : ''}</li>`).join('')}</ul>
-    <div class="botones"><button class="secundario" data-editar="${t.id}">✎ Editar</button><button class="primario" data-cerrar>Cerrar</button></div>`);
+    <div class="botones"><button class="secundario" data-duplicar="${t.id}">⧉ Duplicar</button><button class="secundario" data-editar="${t.id}">✎ Editar</button><button class="primario" data-cerrar>Cerrar</button></div>`);
   if (ir === 'soporte') {
     $('#sec-soporte').scrollIntoView({ block: 'start' });
   } else if (ir) {
@@ -1063,6 +1069,10 @@ document.addEventListener('submit', async (e) => {
   try {
     if (f.id === 'f-tarea') {
       const d = datosForm(f);
+      if (f.dataset.original) {
+        if (d.copiar_soporte) d.copiar_adjuntos_de = Number(f.dataset.original);
+        delete d.copiar_soporte;
+      }
       if (!f.dataset.id && !d.ya_completada && !(d.entregable || '').trim()
           && !confirm('Esta tarea no tiene entregable.\n\n¿Qué debe existir para darla por terminada? Definirlo ayuda a saber cuándo está realmente lista.\n\nAceptar = crearla sin entregable · Cancelar = escribirlo ahora')) {
         f.entregable.focus();
@@ -1071,7 +1081,8 @@ document.addEventListener('submit', async (e) => {
       if (f.dataset.id) await api(`/api/tareas/${f.dataset.id}`, { method: 'PUT', body: d });
       else await api('/api/tareas', { method: 'POST', body: d });
       cerrarModal();
-      toast(!f.dataset.id && d.ya_completada ? '✅ Registrada como completada' : 'Tarea guardada', !f.dataset.id && d.ya_completada ? 'exito' : '');
+      toast(f.dataset.original ? `⧉ Copia creada: «${d.titulo}»` : !f.dataset.id && d.ya_completada ? '✅ Registrada como completada' : 'Tarea guardada',
+        f.dataset.original || (!f.dataset.id && d.ya_completada) ? 'exito' : '');
       await cargarCatalogos(); await refrescar();
     } else if (f.id === 'f-rapida') {
       const d = datosForm(f);
@@ -1189,6 +1200,10 @@ document.addEventListener('click', async (e) => {
     }
     if (d.borrarHito) { await api(`/api/hitos/${d.borrarHito}`, { method: 'DELETE' }); return render(); }
     if (d.tabCatalogo) return gestionarCatalogos(d.tabCatalogo);
+    if (d.duplicar) {
+      const pre = await api(`/api/tareas/${d.duplicar}/duplicado`);
+      return formTarea({ ...pre, _duplicado: pre });
+    }
     if (d.histTab) { st.hist.tab = d.histTab; return render(); }
     if (d.semanaIr) {
       if (d.semanaIr === 'hoy') { st.hist.anio = null; st.hist.semana = null; }

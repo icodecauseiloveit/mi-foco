@@ -214,6 +214,7 @@ def init_db():
             "icono": "TEXT", "imagen": "BLOB", "imagen_tipo": "TEXT", "actualizada_en": "TEXT",
         })
         _agregar_columnas(conn, "subtareas", {"es_entregable": "INTEGER DEFAULT 0"})
+        _agregar_columnas(conn, "tareas", {"duplicada_de": "INTEGER"})  # id de la tarea original
         # Primera vez con catálogos: se cargan con lo que ya existe en las tareas.
         if conn.execute("SELECT COUNT(*) FROM categorias").fetchone()[0] == 0:
             conn.execute(
