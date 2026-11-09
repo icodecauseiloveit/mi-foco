@@ -1528,6 +1528,10 @@ def api_reporte():
     with db.conexion() as conn:
         marcar_vencidas(conn)
         tareas = listar_tareas(conn, incluir_cerradas=True)
+        # Último comentario de cada tarea (el más reciente).
+        ultimos = {r["tarea_id"]: {"texto": r["texto"], "fecha": r["creado_en"]} for r in conn.execute(
+            "SELECT c.tarea_id, c.texto, c.creado_en FROM comentarios c WHERE c.id = ("
+            "SELECT c2.id FROM comentarios c2 WHERE c2.tarea_id = c.tarea_id ORDER BY c2.creado_en DESC, c2.id DESC LIMIT 1)")}
 
     def en_rango(iso):
         d = parse_dt(iso)
@@ -1557,6 +1561,7 @@ def api_reporte():
             "fecha_limite": t["fecha_limite"], "completada_en": t["completada_en"],
             "subtareas": f"{t['subtareas_hechas']}/{t['subtareas_total']}" if t["subtareas_total"] else None,
             "entregable": t["entregable"],
+            "ultimo_comentario": ultimos.get(t["id"]),
         })
     actividades.sort(key=lambda a: (ORDEN_REPORTE[a["estado"]], a["prioridad"],
                                     a["completada_en"] or a["fecha_limite"] or "9999"))
