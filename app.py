@@ -82,12 +82,31 @@ def _err_http(e):
 
 
 # ───────────────────────── tareas: helpers ─────────────────────────
-def registrar_evento(conn, tarea_id, tipo, antes=None, despues=None, detalle=None):
+def registrar_evento(conn, tarea_id, tipo, antes=None, despues=None, detalle=None, momento=None):
     conn.execute(
         "INSERT INTO eventos (tarea_id, tipo, estado_anterior, estado_nuevo, detalle, momento) "
         "VALUES (?,?,?,?,?,?)",
-        (tarea_id, tipo, antes, despues, detalle, db.ahora()),
+        (tarea_id, tipo, antes, despues, detalle, momento or db.ahora()),
     )
+
+
+def fecha_completado(valor):
+    """Valida la fecha de completado que indica el usuario: no puede ser futura. Devuelve ISO con segundos."""
+    d = parse_dt((valor or "").strip())
+    if d is None:
+        raise ValueError("Indica una fecha y hora de completado válida.")
+    if d > datetime.now() + timedelta(minutes=1):
+        raise ValueError("La fecha de completado no puede estar en el futuro.")
+    return d.replace(microsecond=0).isoformat(timespec="seconds")
+
+
+def detalle_entrega(fecha_limite, completada_en):
+    lim, fin = limite_dt(fecha_limite), parse_dt(completada_en)
+    if not lim:
+        return "Sin fecha límite"
+    if fin <= lim:
+        return "A tiempo"
+    return f"Con {fmt_dur_dias((fin - lim).total_seconds() / 86400)} de atraso"
 
 
 def guardar_en_catalogos(conn, categoria=None, descripcion=None):
@@ -497,7 +516,16 @@ def api_crear_tarea():
     dependencias = limpiar_dependencias(d.get("dependencias")) or []
     campos.setdefault("es_rana", 0)
     ahora = db.ahora()
+    ya_completada = d.get("ya_completada") in (True, 1, "1", "true", "on")
+    fin = fecha_completado(d.get("completada_en") or ahora) if ya_completada else None
+    minutos = float(d.get("minutos_dedicados") or 0) if ya_completada else 0
+    if minutos < 0:
+        raise ValueError("El tiempo dedicado no puede ser negativo.")
     campos.update(estado="pendiente", creada_en=ahora, actualizada_en=ahora)
+    if ya_completada:
+        # Registro retroactivo: la tarea "nace" cuando se terminó, para que periodos y ciclos cuadren.
+        inicio = (parse_dt(fin) - timedelta(minutes=minutos)).isoformat(timespec="seconds") if minutos else fin
+        campos.update(estado="completada", creada_en=inicio, iniciada_en=inicio, completada_en=fin)
     with db.conexion() as conn:
         campos["categoria"] = nombre_categoria(conn, campos["categoria"])
         guardar_en_catalogos(conn, campos["categoria"], campos.get("descripcion"))
@@ -514,7 +542,19 @@ def api_crear_tarea():
         if (d.get("entregable") or "").strip():
             definir_entregable(conn, tid, d["entregable"])
             detalle += f" · entregable: «{d['entregable'].strip()[:200]}»"
-        registrar_evento(conn, tid, "creada", None, "pendiente", detalle)
+        if ya_completada:
+            registrar_evento(conn, tid, "creada", None, "completada",
+                             f"Registrada como ya completada · {detalle}", momento=campos["creada_en"])
+            conn.execute("UPDATE subtareas SET completada=1, completada_en=? WHERE tarea_id=?", (fin, tid))
+            if minutos:
+                conn.execute("INSERT INTO sesiones (tarea_id, inicio, fin, minutos, manual) VALUES (?,?,?,?,1)",
+                             (tid, campos["creada_en"], fin, minutos))
+            extra = f" · {minutos:.0f} min dedicados" if minutos else ""
+            registrar_evento(conn, tid, "completada", None, "completada",
+                             detalle_entrega(campos.get("fecha_limite"), fin) + extra + f" · registrada el {ahora.replace('T', ' ')}",
+                             momento=fin)
+        else:
+            registrar_evento(conn, tid, "creada", None, "pendiente", detalle)
         if dependencias:
             agregadas, _ = sincronizar_dependencias(conn, tid, dependencias)
             registrar_evento(conn, tid, "dependencias", None, None, "Depende de " + ", ".join(agregadas))
@@ -541,6 +581,15 @@ def api_editar_tarea(tid):
     with db.conexion() as conn:
         actual = fila_tarea(conn, tid)
         antes = ids_bloqueadas(conn)
+        if d.get("completada_en") and actual["estado"] == "completada":
+            nueva = fecha_completado(d["completada_en"])
+            if nueva[:16] != (actual["completada_en"] or "")[:16]:
+                conn.execute("UPDATE tareas SET completada_en=?, creada_en=MIN(creada_en, ?), "
+                             "iniciada_en=CASE WHEN iniciada_en > ? THEN ? ELSE iniciada_en END, actualizada_en=? WHERE id=?",
+                             (nueva, nueva, nueva, nueva, db.ahora(), tid))
+                registrar_evento(conn, tid, "editada", None, None,
+                                 f"Fecha de completado: {(actual['completada_en'] or '—').replace('T', ' ')[:16]} → "
+                                 f"{nueva.replace('T', ' ')[:16]} · {detalle_entrega(actual['fecha_limite'], nueva)}")
         if dependencias is not None:
             agregadas, quitadas = sincronizar_dependencias(conn, tid, dependencias)
             partes = []

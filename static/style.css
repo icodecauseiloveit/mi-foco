@@ -396,3 +396,8 @@ body.modo-pantalla #vista { flex: 1; min-height: 0; }
 .estado { font-size: .74rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
 .estado.bien { background: var(--exito-suave); color: var(--exito); }
 .estado.sin { background: var(--superficie-2); color: var(--sutil); }
+
+/* Registrar tareas ya completadas */
+.ya-completada { background: var(--exito-suave); border-radius: 12px; padding: 10px 14px 2px; margin-bottom: 12px; }
+.ya-completada .check { margin-bottom: 8px; }
+.ya-completada .campos-completada { margin-top: 2px; }

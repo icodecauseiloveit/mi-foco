@@ -686,6 +686,19 @@ async function formTarea(t = {}) {
       ${editorSubtareas((t.subtareas || []).filter((x) => !x.es_entregable))}
       <label>Depende de <span class="ayuda">(opcional · la tarea queda 🔒 bloqueada hasta que esto se complete)</span></label>
       ${editorDependencias(t)}
+      ${t.id ? '' : `
+      <div class="ya-completada">
+        <label class="check"><input type="checkbox" name="ya_completada" data-toggle-completada> ✅ Ya está completada <span class="ayuda">(registrar algo que ya hiciste)</span></label>
+        <div class="fila campos-completada oculto">
+          <label>Fecha y hora de completado<input type="datetime-local" name="completada_en" value="${aLocalInput(new Date())}" max="${aLocalInput(new Date())}"></label>
+          <label>Tiempo dedicado (min)<input type="number" name="minutos_dedicados" min="0" step="5" placeholder="Opcional · ej. 90"></label>
+        </div>
+      </div>`}
+      ${t.estado === 'completada' ? `
+      <div class="ya-completada">
+        <label>✅ Fecha de completado <span class="ayuda">(corrígela si la marcaste tarde)</span>
+          <input type="datetime-local" name="completada_en" value="${esc((t.completada_en || '').slice(0, 16))}" max="${aLocalInput(new Date())}"></label>
+      </div>` : ''}
       <label class="check"><input type="checkbox" name="es_rana" ${t.es_rana ? 'checked' : ''}> 🐸 Es mi “rana”: la tarea más importante y difícil, la hago primero</label>
       <div class="botones"><button type="button" class="secundario" data-cerrar>Cancelar</button><button class="primario">Guardar</button></div>
     </form>`);
@@ -863,14 +876,16 @@ document.addEventListener('submit', async (e) => {
   try {
     if (f.id === 'f-tarea') {
       const d = datosForm(f);
-      if (!f.dataset.id && !(d.entregable || '').trim()
+      if (!f.dataset.id && !d.ya_completada && !(d.entregable || '').trim()
           && !confirm('Esta tarea no tiene entregable.\n\n¿Qué debe existir para darla por terminada? Definirlo ayuda a saber cuándo está realmente lista.\n\nAceptar = crearla sin entregable · Cancelar = escribirlo ahora')) {
         f.entregable.focus();
         return;
       }
       if (f.dataset.id) await api(`/api/tareas/${f.dataset.id}`, { method: 'PUT', body: d });
       else await api('/api/tareas', { method: 'POST', body: d });
-      cerrarModal(); toast('Tarea guardada'); await cargarCatalogos(); await refrescar();
+      cerrarModal();
+      toast(!f.dataset.id && d.ya_completada ? '✅ Registrada como completada' : 'Tarea guardada', !f.dataset.id && d.ya_completada ? 'exito' : '');
+      await cargarCatalogos(); await refrescar();
     } else if (f.id === 'f-rapida') {
       const d = datosForm(f);
       if (!d.titulo.trim()) return;
@@ -1033,6 +1048,10 @@ document.addEventListener('change', async (e) => {
         await accionTarea(t.id, 'completar');
       }
     } catch (err) { toast(err.message, 'error'); el.checked = !el.checked; }
+    return;
+  }
+  if (el.dataset.toggleCompletada !== undefined) {
+    el.closest('.ya-completada').querySelector('.campos-completada').classList.toggle('oculto', !el.checked);
     return;
   }
   if (el.dataset.depSelect !== undefined) {
