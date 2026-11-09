@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS subtareas (
     completada     INTEGER DEFAULT 0,
     completada_en  TEXT,
     orden          INTEGER DEFAULT 0,
-    creada_en      TEXT NOT NULL
+    creada_en      TEXT NOT NULL,
+    es_entregable  INTEGER DEFAULT 0   -- la subtarea que representa el entregable de la tarea (va al final)
 );
 CREATE INDEX IF NOT EXISTS ix_subtareas_tarea ON subtareas(tarea_id);
 
@@ -179,6 +180,7 @@ def init_db():
         _agregar_columnas(conn, "categorias", {
             "icono": "TEXT", "imagen": "BLOB", "imagen_tipo": "TEXT", "actualizada_en": "TEXT",
         })
+        _agregar_columnas(conn, "subtareas", {"es_entregable": "INTEGER DEFAULT 0"})
         # Primera vez con catálogos: se cargan con lo que ya existe en las tareas.
         if conn.execute("SELECT COUNT(*) FROM categorias").fetchone()[0] == 0:
             conn.execute(

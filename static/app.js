@@ -215,9 +215,9 @@ function etiquetaLimite(t) {
 const subExpandida = (t) => (abierta(t) ? !st.subInvertidas.has(t.id) : st.subInvertidas.has(t.id));
 
 function checklistSubtareas(t, conAgregar = true) {
-  return `<ul class="subtareas">${t.subtareas.map((s) => `<li class="${s.completada ? 'hecha' : ''}">
+  return `<ul class="subtareas">${t.subtareas.map((s) => `<li class="${s.completada ? 'hecha' : ''} ${s.es_entregable ? 'entregable' : ''}">
       <label><input type="checkbox" data-subtarea="${s.id}" data-tarea="${t.id}" ${s.completada ? 'checked' : ''} ${t.estado === 'cancelada' ? 'disabled' : ''}>
-      <span>${esc(s.titulo)}</span></label>
+      <span>${s.es_entregable ? '<em class="tag-entregable">📦 Entregable</em> ' : ''}${esc(s.titulo)}</span></label>
       ${s.completada && s.completada_en ? `<small>${fmtFecha(s.completada_en)}</small>` : ''}</li>`).join('')}</ul>
     ${conAgregar && abierta(t) ? `<form class="f-subtarea" data-tarea="${t.id}"><input name="titulo" placeholder="+ Agregar subtarea y Enter" autocomplete="off"></form>` : ''}`;
 }
@@ -306,6 +306,9 @@ function tarjetaTarea(t, { compacta = false } = {}) {
   if (t.estado !== 'pendiente') chips.push(`<span class="chip ${t.estado === 'en_progreso' ? 'azul' : ''}">${ESTADOS[t.estado]}</span>`);
   if (t.meta_nombre) chips.push(`<span class="chip azul">◆ ${esc(t.meta_nombre)}</span>`);
   chips.push(etiquetaLimite(t));
+  if (t.entregable && t.estado !== 'completada') {
+    chips.push(`<span class="chip ${t.entregable_listo ? 'verde' : ''}" title="Entregable: ${esc(t.entregable)}">📦 ${t.entregable_listo ? 'Entregable listo' : 'Entregable pendiente'}</span>`);
+  }
   chips.push(chipsDependencia(t));
   if (t.tiempo_real_min > 0 || t.estimado_min) {
     const real = fmtMin(t.tiempo_real_min);
@@ -666,6 +669,8 @@ async function formTarea(t = {}) {
   abrirModal(`<h2>${t.id ? 'Editar' : 'Nueva'} tarea</h2>
     <form id="f-tarea" data-id="${t.id || ''}">
       <label>Título<input name="titulo" required maxlength="200" value="${esc(t.titulo || '')}"></label>
+      <label class="campo-entregable">📦 Entregable <span class="ayuda">¿Qué debe existir para dar esta tarea por terminada? Se agrega como la última subtarea.</span>
+        <input name="entregable" maxlength="200" value="${esc(t.entregable || '')}" placeholder="Ej. Programa actualizado enviado a los puntos focales" autocomplete="off"></label>
       <label>Descripción${selectorDescripcion()}<textarea name="descripcion" rows="3">${esc(t.descripcion || '')}</textarea></label>
       <div class="fila">
         <label>Prioridad (método ABCDE)<select name="prioridad">${Object.entries(PRIORIDADES).map(([k, v]) => `<option value="${k}" ${(t.prioridad || 'B') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
@@ -678,7 +683,7 @@ async function formTarea(t = {}) {
       <label>Meta de aprendizaje vinculada <span class="ayuda">(el tiempo de esta tarea sumará a la meta)</span>
         <select name="meta_id"><option value="">— Ninguna —</option>${metas.map((m) => `<option value="${m.id}" ${t.meta_id === m.id ? 'selected' : ''}>${esc(m.herramienta)}</option>`).join('')}</select></label>
       <label>Subtareas <span class="ayuda">(opcional · cada una se completa por separado y define el % de avance)</span></label>
-      ${editorSubtareas(t.subtareas || [])}
+      ${editorSubtareas((t.subtareas || []).filter((x) => !x.es_entregable))}
       <label>Depende de <span class="ayuda">(opcional · la tarea queda 🔒 bloqueada hasta que esto se complete)</span></label>
       ${editorDependencias(t)}
       <label class="check"><input type="checkbox" name="es_rana" ${t.es_rana ? 'checked' : ''}> 🐸 Es mi “rana”: la tarea más importante y difícil, la hago primero</label>
@@ -770,6 +775,8 @@ async function verDetalle(id) {
   ];
   abrirModal(`<h2>${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</h2>
     ${t.descripcion ? `<p style="white-space:pre-wrap">${esc(t.descripcion)}</p>` : ''}
+    ${t.entregable ? `<div class="entregable-detalle ${t.entregable_listo ? 'listo' : ''}">📦 <b>Entregable:</b> ${esc(t.entregable)}
+      <span class="estado ${t.entregable_listo ? 'bien' : 'sin'}">${t.entregable_listo ? '✓ Listo' : 'Pendiente'}</span></div>` : ''}
     <div class="datos" style="grid-template-columns:repeat(3,1fr)">${filas.map(([l, v]) => `<div><b>${v}</b><span>${l}</span></div>`).join('')}</div>
     ${t.dependencias.length || t.frena_a.length ? `<h3 style="margin:18px 0 8px">Dependencias ${t.bloqueada ? '<span class="chip bloq">🔒 Bloqueada</span>' : ''}</h3>
       ${t.dependencias.length ? `<div class="sutil" style="margin-bottom:6px">Espera a:</div><ul class="deps">${t.dependencias.map((d) => `<li class="${d.completa ? 'resuelta' : ''}">
@@ -856,6 +863,11 @@ document.addEventListener('submit', async (e) => {
   try {
     if (f.id === 'f-tarea') {
       const d = datosForm(f);
+      if (!f.dataset.id && !(d.entregable || '').trim()
+          && !confirm('Esta tarea no tiene entregable.\n\n¿Qué debe existir para darla por terminada? Definirlo ayuda a saber cuándo está realmente lista.\n\nAceptar = crearla sin entregable · Cancelar = escribirlo ahora')) {
+        f.entregable.focus();
+        return;
+      }
       if (f.dataset.id) await api(`/api/tareas/${f.dataset.id}`, { method: 'PUT', body: d });
       else await api('/api/tareas', { method: 'POST', body: d });
       cerrarModal(); toast('Tarea guardada'); await cargarCatalogos(); await refrescar();

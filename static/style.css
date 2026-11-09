@@ -383,3 +383,16 @@ body.modo-pantalla #vista { flex: 1; min-height: 0; }
   .hoy-sup, .hoy-medio { grid-template-columns: 1fr; }
   .hoy-paneles { grid-template-columns: 1fr; }
 }
+
+/* Entregable */
+.campo-entregable input { border-color: color-mix(in srgb, var(--acento) 35%, var(--borde)); }
+.subtareas li.entregable { background: var(--acento-suave); margin-top: 4px; }
+.subtareas li.entregable.hecha { background: var(--exito-suave); }
+.tag-entregable { font-style: normal; font-size: .72rem; font-weight: 700; color: var(--acento); margin-right: 2px; }
+.subtareas li.entregable.hecha .tag-entregable { color: var(--exito); }
+.entregable-detalle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: var(--acento-suave); border-radius: 10px; padding: 9px 12px; margin: 4px 0 12px; font-size: .9rem; }
+.entregable-detalle.listo { background: var(--exito-suave); }
+.entregable-detalle .estado { margin-left: auto; }
+.estado { font-size: .74rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.estado.bien { background: var(--exito-suave); color: var(--exito); }
+.estado.sin { background: var(--superficie-2); color: var(--sutil); }

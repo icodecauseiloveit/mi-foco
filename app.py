@@ -131,6 +131,7 @@ def subtareas_por_tarea(conn, tid=None):
     for s in conn.execute(q, (tid,) if tid else ()):
         d = dict(s)
         d["completada"] = bool(d["completada"])
+        d["es_entregable"] = bool(d.get("es_entregable"))
         res.setdefault(d["tarea_id"], []).append(d)
     return res
 
@@ -285,6 +286,9 @@ def serializar(row, totales, abiertas, subs=None, deps=None):
     lista = (subs or {}).get(t["id"], [])
     hechas = sum(1 for s in lista if s["completada"])
     t["subtareas"] = lista
+    ent = next((x for x in lista if x["es_entregable"]), None)
+    t["entregable"] = ent["titulo"] if ent else None
+    t["entregable_listo"] = bool(ent and ent["completada"]) if ent else None
     t["subtareas_total"] = len(lista)
     t["subtareas_hechas"] = hechas
     if t["estado"] == "completada":
@@ -364,9 +368,10 @@ def limpiar_subtareas(valor):
 
 
 def sincronizar_subtareas(conn, tid, lista):
-    """Deja la tarea con exactamente esas subtareas (en ese orden), conservando su estado."""
+    """Deja la tarea con exactamente esas subtareas (en ese orden), conservando su estado.
+    No toca la subtarea de entregable: esa se maneja con `definir_entregable` y siempre va de última."""
     ahora = db.ahora()
-    actuales = {s["id"]: s for s in conn.execute("SELECT * FROM subtareas WHERE tarea_id=?", (tid,))}
+    actuales = {s["id"]: s for s in conn.execute("SELECT * FROM subtareas WHERE tarea_id=? AND es_entregable=0", (tid,))}
     vistos, nuevas, quitadas = set(), [], []
     for orden, s in enumerate(lista, start=1):
         if s["id"] in actuales:
@@ -380,7 +385,28 @@ def sincronizar_subtareas(conn, tid, lista):
         if sid not in vistos:
             conn.execute("DELETE FROM subtareas WHERE id=?", (sid,))
             quitadas.append(s["titulo"])
+    conn.execute("UPDATE subtareas SET orden=? WHERE tarea_id=? AND es_entregable=1", (len(lista) + 1, tid))
     return nuevas, quitadas
+
+
+def definir_entregable(conn, tid, texto):
+    """Crea, renombra o quita la subtarea de entregable. Devuelve el texto para la bitácora (o None)."""
+    texto = (texto or "").strip()[:200]
+    actual = conn.execute("SELECT * FROM subtareas WHERE tarea_id=? AND es_entregable=1", (tid,)).fetchone()
+    if not texto:
+        if actual:
+            conn.execute("DELETE FROM subtareas WHERE id=?", (actual["id"],))
+            return f"Quitó el entregable «{actual['titulo']}»"
+        return None
+    if actual:
+        if actual["titulo"] == texto:
+            return None
+        conn.execute("UPDATE subtareas SET titulo=? WHERE id=?", (texto, actual["id"]))
+        return f"Entregable: «{actual['titulo']}» → «{texto}»"
+    orden = conn.execute("SELECT COALESCE(MAX(orden),0)+1 FROM subtareas WHERE tarea_id=?", (tid,)).fetchone()[0]
+    conn.execute("INSERT INTO subtareas (tarea_id, titulo, orden, creada_en, es_entregable) VALUES (?,?,?,?,1)",
+                 (tid, texto, orden, db.ahora()))
+    return f"Entregable: «{texto}»"
 
 
 def avance_texto(conn, tid):
@@ -485,6 +511,9 @@ def api_crear_tarea():
         if subtareas:
             sincronizar_subtareas(conn, tid, subtareas)
             detalle += f" · {len(subtareas)} subtarea(s)"
+        if (d.get("entregable") or "").strip():
+            definir_entregable(conn, tid, d["entregable"])
+            detalle += f" · entregable: «{d['entregable'].strip()[:200]}»"
         registrar_evento(conn, tid, "creada", None, "pendiente", detalle)
         if dependencias:
             agregadas, _ = sincronizar_dependencias(conn, tid, dependencias)
@@ -521,6 +550,10 @@ def api_editar_tarea(tid):
                 partes.append("ya no depende de " + ", ".join(quitadas))
             if partes:
                 registrar_evento(conn, tid, "dependencias", None, None, cap("; ".join(partes)))
+        if "entregable" in d:
+            cambio = definir_entregable(conn, tid, d.get("entregable"))
+            if cambio:
+                registrar_evento(conn, tid, "subtareas", None, None, f"{cambio} · avance {avance_texto(conn, tid)}")
         if subtareas is not None:
             nuevas, quitadas = sincronizar_subtareas(conn, tid, subtareas)
             if nuevas or quitadas:
@@ -691,9 +724,11 @@ def api_crear_subtarea(tid):
         raise ValueError("Escribe la subtarea.")
     with db.conexion() as conn:
         fila_tarea(conn, tid)
-        orden = conn.execute("SELECT COALESCE(MAX(orden),0)+1 FROM subtareas WHERE tarea_id=?", (tid,)).fetchone()[0]
+        orden = conn.execute("SELECT COALESCE(MAX(orden),0)+1 FROM subtareas WHERE tarea_id=? AND es_entregable=0",
+                             (tid,)).fetchone()[0]
         conn.execute("INSERT INTO subtareas (tarea_id, titulo, orden, creada_en) VALUES (?,?,?,?)",
                      (tid, titulo, orden, db.ahora()))
+        conn.execute("UPDATE subtareas SET orden=? WHERE tarea_id=? AND es_entregable=1", (orden + 1, tid))
         registrar_evento(conn, tid, "subtareas", None, None, f"Agregó «{titulo}» · avance {avance_texto(conn, tid)}")
         return jsonify(obtener_tarea(conn, tid)), 201
 
@@ -715,8 +750,9 @@ def api_editar_subtarea(sid):
             if hecha:  # avanzar en una subtarea cuenta como haber empezado la tarea
                 conn.execute("UPDATE tareas SET iniciada_en=COALESCE(iniciada_en, ?), actualizada_en=? WHERE id=?",
                              (ahora, ahora, tid))
+            etiqueta = "📦 Entregable " if s["es_entregable"] else ""
             registrar_evento(conn, tid, "subtarea_completada" if hecha else "subtarea_reabierta", None, None,
-                             f"{'✓' if hecha else '↺'} «{s['titulo']}» · avance {avance_texto(conn, tid)}")
+                             f"{'✓' if hecha else '↺'} {etiqueta}«{s['titulo']}» · avance {avance_texto(conn, tid)}")
         res = obtener_tarea(conn, tid)
         res["desbloqueadas"] = registrar_cambios_bloqueo(
             conn, antes, f"{'se completó' if d.get('completada') else 'se desmarcó'} la subtarea «{s['titulo']}»")
@@ -1310,7 +1346,7 @@ def api_exportar_tareas():
     with db.conexion() as conn:
         filas = listar_tareas(conn, incluir_cerradas=True)
     cols = ["id", "titulo", "prioridad", "categoria", "estado", "es_rana", "meta_nombre", "creada_en",
-            "iniciada_en", "completada_en", "fecha_limite", "estimado_min", "tiempo_real_min", "bloqueada", "subtareas_total", "subtareas_hechas", "progreso_pct",
+            "iniciada_en", "completada_en", "fecha_limite", "estimado_min", "tiempo_real_min", "entregable", "entregable_listo", "bloqueada", "subtareas_total", "subtareas_hechas", "progreso_pct",
             "ciclo_horas", "dias_atraso", "completada_a_tiempo"]
     return _csv("tareas.csv", filas, cols)
 
