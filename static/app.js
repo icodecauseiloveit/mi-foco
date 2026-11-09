@@ -303,7 +303,11 @@ function tarjetaTarea(t, { compacta = false } = {}) {
   if (['completada', 'cancelada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="reabrir" data-id="${t.id}">↺ Reabrir</button>`);
 
   const chips = [`<span class="chip chip-cat">${iconoCategoria(t.categoria)}${esc(t.categoria)}</span>`];
-  if (t.estado !== 'pendiente') chips.push(`<span class="chip ${t.estado === 'en_progreso' ? 'azul' : ''}">${ESTADOS[t.estado]}</span>`);
+  if (t.estado === 'completada' && t.completada_en) {
+    chips.push(`<button type="button" class="chip chip-fecha" data-fecha-completado="${t.id}" title="Cambiar la fecha de completado">✅ ${fmtFecha(t.completada_en)} <span class="lapiz">✎</span></button>`);
+  } else if (t.estado !== 'pendiente') {
+    chips.push(`<span class="chip ${t.estado === 'en_progreso' ? 'azul' : ''}">${ESTADOS[t.estado]}</span>`);
+  }
   if (t.meta_nombre) chips.push(`<span class="chip azul">◆ ${esc(t.meta_nombre)}</span>`);
   chips.push(etiquetaLimite(t));
   if (t.entregable && t.estado !== 'completada') {
@@ -775,11 +779,31 @@ async function gestionarCatalogos(pestana = 'categorias') {
     <div class="botones"><button class="secundario" data-cerrar>Cerrar</button></div>`);
 }
 
+function formFechaCompletado(t, desdeDetalle = false) {
+  const actual = new Date(t.completada_en);
+  const conDias = (n) => { const d = new Date(actual); const hoy = new Date(); d.setFullYear(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - n); return aLocalInput(d > hoy ? hoy : d); };
+  abrirModal(`<h2>✅ Fecha de completado</h2>
+    <p class="sutil" style="margin-bottom:12px">«${esc(t.titulo)}»${t.fecha_limite ? ` · fecha límite ${fmtFecha(t.fecha_limite)}` : ''}</p>
+    <form id="f-fecha-comp" data-id="${t.id}" ${desdeDetalle ? 'data-desde-detalle' : ''}>
+      <label>¿Cuándo la terminaste?
+        <input type="datetime-local" name="completada_en" value="${aLocalInput(actual)}" max="${aLocalInput(new Date())}" required></label>
+      <div class="atajos-fecha">
+        <button type="button" class="mini" data-fijar-fecha="${conDias(0)}">Hoy</button>
+        <button type="button" class="mini" data-fijar-fecha="${conDias(1)}">Ayer</button>
+        <button type="button" class="mini" data-fijar-fecha="${conDias(2)}">Hace 2 días</button>
+        <button type="button" class="mini" data-fijar-fecha="${conDias(7)}">Hace una semana</button>
+      </div>
+      <p class="ayuda">Se conserva la hora; ajústala si hace falta. Se recalcula si fue a tiempo y queda en el historial.</p>
+      <div class="botones"><button type="button" class="secundario" data-cerrar>Cancelar</button><button class="primario">Guardar fecha</button></div>
+    </form>`);
+}
+
 async function verDetalle(id) {
   const t = await api(`/api/tareas/${id}`);
   const filas = [
     ['Estado', ESTADOS[t.estado]], ['Prioridad', PRIORIDADES[t.prioridad].split(' (')[0]], ['Categoría', esc(t.categoria)],
-    ['Creada', fmtFecha(t.creada_en)], ['Iniciada', fmtFecha(t.iniciada_en)], ['Completada', fmtFecha(t.completada_en)],
+    ['Creada', fmtFecha(t.creada_en)], ['Iniciada', fmtFecha(t.iniciada_en)],
+    ['Completada', t.estado === 'completada' ? `<button type="button" class="enlace-fecha" data-fecha-completado="${t.id}" data-desde-detalle title="Cambiar la fecha de completado">${fmtFecha(t.completada_en)} ✎</button>` : fmtFecha(t.completada_en)],
     ['Fecha límite', fmtFecha(t.fecha_limite)], ['Tiempo real', fmtMin(t.tiempo_real_min)],
     ['Estimado', t.estimado_min ? fmtMin(t.estimado_min) : '—'],
     ['Ciclo total', t.ciclo_horas != null ? fmtDias(t.ciclo_horas / 24) : '—'],
@@ -902,6 +926,12 @@ document.addEventListener('submit', async (e) => {
       await render();
       const otra = enModal ? $('#modal-caja .f-subtarea input') : $(`#vista .f-subtarea[data-tarea="${t.id}"] input`);
       if (otra) otra.focus();
+    } else if (f.id === 'f-fecha-comp') {
+      const r = await api(`/api/tareas/${f.dataset.id}`, { method: 'PUT', body: { completada_en: f.completada_en.value } });
+      const plazo = r.completada_a_tiempo === true ? ' · a tiempo ✓' : r.completada_a_tiempo === false ? ` · ${fmtDias(r.dias_atraso)} de atraso` : '';
+      toast(`Fecha de completado: ${fmtFecha(r.completada_en)}${plazo}`, 'exito');
+      if (f.dataset.desdeDetalle !== undefined) await verDetalle(r.id); else cerrarModal();
+      await refrescar();
     } else if (f.id === 'f-emoji') {
       const icono = f.icono.value.trim();
       if (!icono) return;
@@ -974,6 +1004,12 @@ document.addEventListener('click', async (e) => {
     }
     if (d.borrarHito) { await api(`/api/hitos/${d.borrarHito}`, { method: 'DELETE' }); return render(); }
     if (d.tabCatalogo) return gestionarCatalogos(d.tabCatalogo);
+    if (d.fechaCompletado) {
+      const id = Number(d.fechaCompletado);
+      const t = st.tareas.find((x) => x.id === id) || await api(`/api/tareas/${id}`);
+      return formFechaCompletado(t, d.desdeDetalle !== undefined);
+    }
+    if (d.fijarFecha) { el.closest('form').completada_en.value = d.fijarFecha; return; }
     if (d.editarIcono) return formIconoCategoria(st.catalogos.categorias.find((c) => c.id === Number(d.editarIcono)));
     if (d.ponerIcono) return guardarIcono(Number(d.cat), { icono: d.ponerIcono }, `Ícono ${d.ponerIcono} asignado`);
     if (d.quitarIcono) return guardarIcono(Number(d.quitarIcono), { quitar_icono: true }, 'Ícono quitado');
