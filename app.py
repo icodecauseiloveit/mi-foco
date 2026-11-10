@@ -348,6 +348,9 @@ def serializar(row, totales, abiertas, subs=None, deps=None, coment=None, adj=No
     lista = (subs or {}).get(t["id"], [])
     hechas = sum(1 for s in lista if s["completada"])
     t["subtareas"] = lista
+    t["novedades_sub"] = [{"id": x["id"], "titulo": x["titulo"], "novedad": x["novedad"], "novedad_en": x["novedad_en"]}
+                          for x in lista if x.get("novedad") and not x["completada"]]
+    t["con_novedad"] = bool(t.get("novedad")) or bool(t["novedades_sub"])
     corriendo = next((x for x in lista if x.get("sesion_abierta")), None)
     t["subtarea_en_curso"] = {"id": corriendo["id"], "titulo": corriendo["titulo"]} if corriendo else None
     t["tiempo_por_subtareas"] = any(not x["completada"] for x in lista)  # el tiempo se inicia desde las subtareas
@@ -842,9 +845,10 @@ def api_accion_tarea(tid):
                 conn.execute("INSERT INTO sesiones (tarea_id, inicio, fin, minutos, manual) VALUES (?,?,?,?,1)",
                              (tid, ini, ahora, m))
                 mins += m
-            conn.execute("UPDATE tareas SET estado='completada', completada_en=?, "
+            conn.execute("UPDATE tareas SET estado='completada', completada_en=?, novedad=NULL, novedad_en=NULL, "
                          "iniciada_en=COALESCE(iniciada_en, ?), actualizada_en=? WHERE id=?",
                          (ahora, ahora, ahora, tid))
+            conn.execute("UPDATE subtareas SET novedad=NULL, novedad_en=NULL WHERE tarea_id=?", (tid,))
             lim = limite_dt(t["fecha_limite"])
             if not lim:
                 detalle = "Sin fecha límite"
@@ -857,6 +861,25 @@ def api_accion_tarea(tid):
             if pendientes:
                 detalle += f" · se cerraron {pendientes} subtarea(s) pendiente(s)"
             registrar_evento(conn, tid, "completada", est, "completada", detalle + ignorando)
+
+        elif accion == "novedad":
+            texto = texto_novedad(d.get("texto"))
+            if not texto:
+                raise ValueError("Describe la novedad que impide terminar la tarea.")
+            if est not in ABIERTOS:
+                raise ValueError("La tarea está cerrada: reábrela para registrar una novedad.")
+            mins = cerrar_sesion(conn, tid, ahora)
+            nuevo_est = "pausada" if est == "en_progreso" else est
+            conn.execute("UPDATE tareas SET novedad=?, novedad_en=?, estado=?, iniciada_en=COALESCE(iniciada_en, ?), "
+                         "actualizada_en=? WHERE id=?", (texto, ahora, nuevo_est, ahora, ahora, tid))
+            registrar_evento(conn, tid, "novedad", est, nuevo_est,
+                             f"● Novedad: {texto}" + (f" · sesión de {mins:.0f} min" if mins else ""))
+
+        elif accion == "quitar_novedad":
+            if not t["novedad"]:
+                raise ValueError("La tarea no tiene novedad.")
+            conn.execute("UPDATE tareas SET novedad=NULL, novedad_en=NULL, actualizada_en=? WHERE id=?", (ahora, tid))
+            registrar_evento(conn, tid, "novedad_resuelta", None, None, f"Novedad resuelta: {t['novedad']}")
 
         elif accion == "reabrir":
             if est not in ("completada", "cancelada"):
@@ -1062,8 +1085,28 @@ def api_editar_subtarea(sid):
         antes = ids_bloqueadas(conn)
         if (d.get("titulo") or "").strip():
             conn.execute("UPDATE subtareas SET titulo=? WHERE id=?", (d["titulo"].strip()[:200], sid))
+        if "novedad" in d:
+            texto = texto_novedad(d.get("novedad"))
+            if texto and texto == s["novedad"] and not s["completada"]:
+                pass  # misma novedad: nada que registrar
+            elif texto:
+                # Queda sin completar, con su tiempo; si estaba corriendo se pausa.
+                mins = cerrar_sesion_subtarea(conn, sid, ahora)
+                if mins and not conn.execute("SELECT 1 FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchone():
+                    conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=? AND estado='en_progreso'", (ahora, tid))
+                conn.execute("UPDATE subtareas SET novedad=?, novedad_en=?, completada=0, completada_en=NULL WHERE id=?",
+                             (texto, ahora, sid))
+                conn.execute("UPDATE tareas SET iniciada_en=COALESCE(iniciada_en, ?), actualizada_en=? WHERE id=?", (ahora, ahora, tid))
+                registrar_evento(conn, tid, "novedad", None, None,
+                                 f"● Novedad en «{s['titulo']}»: {texto}" + (f" · sesión de {mins:.0f} min" if mins else ""))
+            elif s["novedad"]:
+                conn.execute("UPDATE subtareas SET novedad=NULL, novedad_en=NULL WHERE id=?", (sid,))
+                registrar_evento(conn, tid, "novedad_resuelta", None, None, f"Novedad resuelta en «{s['titulo']}»: {s['novedad']}")
         if "completada" in d and bool(d["completada"]) != bool(s["completada"]):
             hecha = bool(d["completada"])
+            if hecha and s["novedad"]:
+                conn.execute("UPDATE subtareas SET novedad=NULL, novedad_en=NULL WHERE id=?", (sid,))
+                registrar_evento(conn, tid, "novedad_resuelta", None, None, f"Novedad resuelta en «{s['titulo']}»: {s['novedad']}")
             if hecha:
                 mins = cerrar_sesion_subtarea(conn, sid, ahora)
                 if mins and not conn.execute("SELECT 1 FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchone():
@@ -1104,6 +1147,13 @@ def cerrar_sesion_subtarea(conn, sid, momento):
         conn.execute("UPDATE sesiones SET fin=?, minutos=? WHERE id=?", (momento, round(m, 2), s["id"]))
         total += m
     return total
+
+
+def texto_novedad(valor):
+    texto = (valor or "").strip()
+    if len(texto) > 500:
+        raise ValueError("La novedad es muy larga (máx. 500 caracteres).")
+    return texto
 
 
 @app.post("/api/subtareas/<int:sid>/accion")
@@ -1637,7 +1687,7 @@ def api_estadisticas():
 
 
 # ───────────────────────── reporte de cumplimiento ─────────────────────────
-ORDEN_REPORTE = {"vencida": 0, "bloqueada": 1, "en_curso": 2, "pendiente": 3, "atrasada": 4, "a_tiempo": 5, "sin_fecha": 6}
+ORDEN_REPORTE = {"vencida": 0, "con_novedad": 1, "bloqueada": 2, "en_curso": 3, "pendiente": 4, "atrasada": 5, "a_tiempo": 6, "sin_fecha": 7}
 
 
 def estado_reporte(t):
@@ -1650,6 +1700,9 @@ def estado_reporte(t):
         return "sin_fecha", "Completada"
     if t["vencida"]:
         return "vencida", f"Vencida hace {fmt_dur_dias(t['dias_atraso'])}"
+    if t.get("con_novedad"):
+        n = len(t.get("novedades_sub") or [])
+        return "con_novedad", "Con novedad" if t.get("novedad") or n != 1 else "Subtarea con novedad"
     if t["bloqueada"]:
         return "bloqueada", "Bloqueada (en espera)"
     if t["estado"] in ("en_progreso", "pausada") or (t["progreso_pct"] or 0) > 0:
@@ -1712,6 +1765,8 @@ def api_reporte():
             "subtareas": f"{t['subtareas_hechas']}/{t['subtareas_total']}" if t["subtareas_total"] else None,
             "entregable": t["entregable"],
             "ultimo_comentario": ultimos.get(t["id"]),
+            "novedad": {"texto": t["novedad"], "fecha": t["novedad_en"]} if t.get("novedad") else None,
+            "novedades_sub": [{"titulo": x["titulo"], "texto": x["novedad"], "fecha": x["novedad_en"]} for x in t["novedades_sub"]],
         })
     actividades.sort(key=lambda a: (ORDEN_REPORTE[a["estado"]], a["prioridad"],
                                     a["completada_en"] or a["fecha_limite"] or "9999"))
@@ -1739,6 +1794,7 @@ def api_reporte():
             "en_curso": sum(1 for a in actividades if a["estado"] in ("en_curso", "bloqueada")),
             "pendientes": sum(1 for a in actividades if a["estado"] == "pendiente"),
             "vencidas": sum(1 for a in actividades if a["estado"] == "vencida"),
+            "con_novedad": sum(1 for a in actividades if a["novedad"] or a["novedades_sub"]),
             "avance_pct": round(sum(a["progreso"] for a in actividades) / len(actividades)) if actividades else None,
         },
         "actividades": actividades,
@@ -1789,10 +1845,14 @@ def api_semana():
         practica = conn.execute(
             "SELECT r.fecha, r.minutos, r.nota, m.herramienta FROM registros_aprendizaje r JOIN metas m ON m.id=r.meta_id "
             "WHERE r.fecha >= ? AND r.fecha <= ?", (dias[0].isoformat(), dias[-1].isoformat())).fetchall()
+        novedades = conn.execute(
+            "SELECT e.tarea_id, e.tipo, e.detalle, e.momento FROM eventos e JOIN tareas t ON t.id=e.tarea_id "
+            "WHERE t.eliminada=0 AND e.tipo IN ('novedad','novedad_resuelta') AND e.momento >= ? AND e.momento < ? "
+            "ORDER BY e.momento", rango).fetchall()
 
     ahora = datetime.now()
-    por_dia = {d.isoformat(): {"completadas": [], "subtareas": [], "trabajadas": {}, "comentarios": [], "practica": []}
-               for d in dias}
+    por_dia = {d.isoformat(): {"completadas": [], "subtareas": [], "trabajadas": {}, "comentarios": [], "practica": [],
+                               "novedades": []} for d in dias}
     breve = lambda t: {"id": t["id"], "titulo": t["titulo"], "prioridad": t["prioridad"], "categoria": t["categoria"]}
 
     for t in tareas.values():
@@ -1824,9 +1884,15 @@ def api_semana():
             por_dia[c["creado_en"][:10]]["comentarios"].append({"texto": c["texto"], "hora": c["creado_en"][11:16], "tarea": breve(t)})
     for r in practica:
         por_dia[r["fecha"]]["practica"].append({"meta": r["herramienta"], "minutos": r["minutos"], "nota": r["nota"]})
+    for e in novedades:
+        t = tareas.get(e["tarea_id"])
+        if t:
+            por_dia[e["momento"][:10]]["novedades"].append({
+                "resuelta": e["tipo"] == "novedad_resuelta", "texto": (e["detalle"] or "").removeprefix("● "),
+                "hora": e["momento"][11:16], "tarea": breve(t)})
 
     salida, total = [], {"completadas": 0, "a_tiempo": 0, "subtareas": 0, "minutos_foco": 0, "minutos_practica": 0,
-                         "comentarios": 0, "dias_habiles": 0, "dias_con_actividad": 0}
+                         "comentarios": 0, "novedades": 0, "dias_habiles": 0, "dias_con_actividad": 0}
     for i, d in enumerate(dias):
         k = d.isoformat()
         x = por_dia[k]
@@ -1838,13 +1904,13 @@ def api_semana():
         minutos_practica = sum(p["minutos"] for p in x["practica"])
         festivo = fest.get(k)
         habil = i < 5 and not festivo
-        hubo = any([x["completadas"], x["subtareas"], trabajadas, x["comentarios"], x["practica"]])
+        hubo = any([x["completadas"], x["subtareas"], trabajadas, x["comentarios"], x["practica"], x["novedades"]])
         salida.append({
             "fecha": k, "dia_semana": DIAS_SEMANA[i], "festivo": festivo, "fin_de_semana": i >= 5, "habil": habil,
             "hoy": d == hoy, "futuro": d > hoy,
             "completadas": sorted(x["completadas"], key=lambda v: v["hora"]),
             "subtareas": sorted(x["subtareas"], key=lambda v: v["hora"]),
-            "trabajadas": trabajadas, "comentarios": x["comentarios"], "practica": x["practica"],
+            "trabajadas": trabajadas, "comentarios": x["comentarios"], "practica": x["practica"], "novedades": x["novedades"],
             "minutos_foco": minutos_foco, "minutos_practica": minutos_practica,
         })
         total["completadas"] += len(x["completadas"])
@@ -1853,6 +1919,7 @@ def api_semana():
         total["minutos_foco"] += minutos_foco
         total["minutos_practica"] += minutos_practica
         total["comentarios"] += len(x["comentarios"])
+        total["novedades"] += sum(1 for n in x["novedades"] if not n["resuelta"])
         total["dias_habiles"] += 1 if habil else 0
         total["dias_con_actividad"] += 1 if hubo else 0
     total["promedio_por_dia_habil"] = round(total["completadas"] / total["dias_habiles"], 1) if total["dias_habiles"] else None

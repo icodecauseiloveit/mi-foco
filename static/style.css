@@ -674,3 +674,35 @@ ul.adjuntos .ico { text-decoration: none; }
 .btn-tema .luna { transform: translateY(120%) rotate(-40deg); opacity: 0; }
 html.tema-oscuro .btn-tema .sol { transform: translateY(-120%) rotate(40deg); opacity: 0; }
 html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
+
+/* ───────── Novedades ───────── */
+.sub-marca { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; cursor: pointer; border-radius: 6px; outline-offset: 2px; user-select: none; }
+.sub-marca[aria-disabled="true"] { cursor: default; opacity: .6; }
+.subtareas .sub-titulo { flex: 1; min-width: 0; }
+.subtareas li.hecha .sub-titulo { text-decoration: line-through; color: var(--sutil); }
+.chk { width: 18px; height: 18px; flex: none; border-radius: 5px; border: 2px solid color-mix(in srgb, var(--sutil) 60%, transparent);
+  display: inline-grid; place-items: center; transition: background .15s, border-color .15s, transform .12s; background: var(--superficie); }
+.sub-marca:hover .chk { border-color: var(--acento); }
+.sub-marca:active .chk { transform: scale(.9); }
+.chk-hecho { background: var(--exito); border-color: var(--exito); }
+.chk-hecho::after { content: ""; width: 9px; height: 5px; border: 2.4px solid #fff; border-top: 0; border-right: 0; transform: translateY(-1px) rotate(-45deg); }
+.chk-novedad { border-color: var(--peligro); }
+.chk-novedad::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--peligro); }
+.subtareas li { flex-wrap: wrap; }
+.subtareas li.con-novedad { background: var(--peligro-suave); }
+.sub-novedad { flex-basis: 100%; padding: 2px 0 2px 27px; font-size: .8rem; color: var(--peligro); }
+.sub-novedad small { color: var(--sutil); }
+.sub-novedad .ico { padding: 0 4px; font-size: .75rem; }
+.banner-novedad { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--peligro-suave); color: var(--texto); border-left: 3px solid var(--peligro); border-radius: 10px; padding: 9px 12px; margin-bottom: 12px; font-size: .88rem; }
+.banner-novedad b { color: var(--peligro); }
+.banner-novedad small { color: var(--sutil); }
+.banner-acc { display: flex; gap: 6px; }
+.dot-novedad { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--peligro); margin-right: 7px; vertical-align: 1px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--peligro) 20%, transparent); }
+.btn-acc.novedad { color: var(--peligro); }
+.btn-acc.novedad:hover { background: var(--peligro-suave); border-color: var(--peligro); }
+.timeline li.ev-novedad::before { border-color: var(--peligro); }
+.timeline li.ev-novedad_resuelta::before { border-color: var(--exito); }
+.dia-sec li.nov-abierta > span { color: var(--peligro); font-weight: 500; }
+.dia-sec li.nov-resuelta > span { color: var(--exito); }

@@ -11,7 +11,7 @@ const RPT = {
   },
   estados: {
     a_tiempo: ['#15803d', '#dcfce7'], sin_fecha: ['#166534', '#ecfdf3'], atrasada: ['#b45309', '#fef3c7'],
-    vencida: ['#b91c1c', '#fee2e2'], bloqueada: ['#334155', '#e2e8f0'], en_curso: ['#4338ca', '#e0e7ff'], pendiente: ['#475569', '#f1f5f9'],
+    vencida: ['#b91c1c', '#fee2e2'], con_novedad: ['#c2410c', '#ffedd5'], bloqueada: ['#334155', '#e2e8f0'], en_curso: ['#4338ca', '#e0e7ff'], pendiente: ['#475569', '#f1f5f9'],
   },
   prioridad: { A: ['#c81e1e', '#fff'], B: ['#ea580c', '#fff'], C: ['#f59e0b', '#3b2304'], D: ['#fcd34d', '#3b2f04'], E: ['#cbd5e1', '#334155'] },
   maxFilas: 28,
@@ -102,11 +102,17 @@ function dibujarReporte(datos, { autor = '' } = {}) {
   const medidor = document.createElement('canvas').getContext('2d');
   fuente(medidor, 'italic 400', 12);
   const anchoComent = ancho - 2 * M - 34 - 12;
+  const plano = (txt) => txt.replace(/\s*\n+\s*/g, ' · ');
   filas.forEach((a) => {
+    const nov = [];
+    if (a.novedad) nov.push(`Novedad (${fechaCorta(a.novedad.fecha)}): ${plano(a.novedad.texto)}`);
+    (a.novedades_sub || []).forEach((n) => nov.push(`${n.titulo}: ${plano(n.texto)}`));
+    a._nov = nov.length ? partirLineas(medidor, nov.join('  ·  '), anchoComent - 22, 2) : [];
     a._coment = a.ultimo_comentario
-      ? partirLineas(medidor, `${fechaCorta(a.ultimo_comentario.fecha)}: ${a.ultimo_comentario.texto.replace(/\s*\n+\s*/g, ' · ')}`, anchoComent - 22, 2)
+      ? partirLineas(medidor, `${fechaCorta(a.ultimo_comentario.fecha)}: ${plano(a.ultimo_comentario.texto)}`, anchoComent - 22, 2)
       : [];
-    a._alto = altoFila + (a._coment.length ? 6 + a._coment.length * altoLineaComent : 0);
+    const banda = (n) => (n ? 6 + n * altoLineaComent : 0);
+    a._alto = altoFila + banda(a._nov.length) + banda(a._coment.length) + (a._nov.length && a._coment.length ? 4 : 0);
   });
   const altoFilas = filas.length ? filas.reduce((n, a) => n + a._alto, 0) : altoFila;
   // Alto exacto: encabezado+indicadores (268) + avance (44) + cabecera de tabla (40) + filas + "más" + pie
@@ -138,7 +144,7 @@ function dibujarReporte(datos, { autor = '' } = {}) {
     { t: 'Cumplimiento del plan', v: k.cumplimiento_plan_pct, pct: true, d: k.plan_total ? `${k.plan_cumplido} de ${k.plan_total} a tiempo` : 'Nada vencía en el periodo' },
     { t: 'Entregas a tiempo', v: k.entregas_a_tiempo_pct, pct: true, d: k.a_tiempo + k.tarde ? `${k.a_tiempo} de ${k.a_tiempo + k.tarde} entregas` : 'Sin entregas con fecha' },
     { t: 'Completadas', v: k.completadas, d: `de ${k.actividades} actividades del reporte`, color: '#15803d' },
-    { t: 'En curso / pendientes', v: `${k.en_curso} / ${k.pendientes}`, d: 'trabajo abierto' , color: '#4338ca' },
+    { t: 'En curso / pendientes', v: `${k.en_curso} / ${k.pendientes}`, d: k.con_novedad ? `● ${k.con_novedad} con novedad` : 'trabajo abierto', color: '#4338ca' },
     { t: 'Vencidas', v: k.vencidas, d: k.vencidas ? 'requieren atención' : 'nada vencido', color: k.vencidas ? '#b91c1c' : '#15803d' },
   ];
   const gap = 14, wT = (ancho - 2 * M - gap * (tarjetas.length - 1)) / tarjetas.length, hT = 108;
@@ -200,15 +206,20 @@ function dibujarReporte(datos, { autor = '' } = {}) {
     ctx.fillText(fechaCorta(a.fecha_limite), col.lim, yc);
     ctx.fillStyle = c.texto; ctx.fillText(fechaCorta(a.completada_en, true), col.fin, yc);
     ctx.textBaseline = 'alphabetic';
-    // último comentario, a todo lo ancho bajo la fila
-    if (a._coment.length) {
-      const yC = y + altoFila + 2;
-      ctx.fillStyle = '#eef6fc'; rr(ctx, col.act - 6, yC - 2, anchoComent + 12, a._coment.length * altoLineaComent + 8, 7); ctx.fill();
-      ctx.fillStyle = '#0284c7'; ctx.fillRect(col.act - 6, yC - 2, 3, a._coment.length * altoLineaComent + 8);
-      fuente(ctx, 400, 12); ctx.fillText('💬', col.act + 2, yC + 13);
-      fuente(ctx, 'italic 400', 12); ctx.fillStyle = '#0c4a6e';
-      a._coment.forEach((linea, j) => ctx.fillText(linea, col.act + 22, yC + 13 + j * altoLineaComent));
-    }
+    // franjas a todo lo ancho bajo la fila: ● novedad (rojo) y 💬 último comentario (azul)
+    let yB = y + altoFila + 2;
+    const franja = (lineas, fondo, borde, colorTxt, icono, italica) => {
+      if (!lineas.length) return;
+      ctx.fillStyle = fondo; rr(ctx, col.act - 6, yB - 2, anchoComent + 12, lineas.length * altoLineaComent + 8, 7); ctx.fill();
+      ctx.fillStyle = borde; ctx.fillRect(col.act - 6, yB - 2, 3, lineas.length * altoLineaComent + 8);
+      if (icono === '●') { ctx.beginPath(); ctx.arc(col.act + 8, yB + 9, 4.5, 0, Math.PI * 2); ctx.fill(); }
+      else { fuente(ctx, 400, 12); ctx.fillText(icono, col.act + 2, yB + 13); }
+      fuente(ctx, italica ? 'italic 400' : '600', 12); ctx.fillStyle = colorTxt;
+      lineas.forEach((linea, j) => ctx.fillText(linea, col.act + 22, yB + 13 + j * altoLineaComent));
+      yB += lineas.length * altoLineaComent + 10;
+    };
+    franja(a._nov, '#fef2f2', '#dc2626', '#991b1b', '●', false);
+    franja(a._coment, '#eef6fc', '#0284c7', '#0c4a6e', '💬', true);
     ctx.strokeStyle = c.borde; ctx.beginPath(); ctx.moveTo(M, y + a._alto); ctx.lineTo(ancho - M, y + a._alto); ctx.stroke();
     y += a._alto;
   });
@@ -220,7 +231,7 @@ function dibujarReporte(datos, { autor = '' } = {}) {
 
   // ── Pie
   fuente(ctx, 400, 11.5); ctx.fillStyle = c.sutil;
-  ctx.fillText('Cumplimiento del plan: actividades que vencían en el periodo y se cerraron a tiempo.  ·  💬 último comentario de cada actividad.  ·  Estado al generar el reporte.', M, alto - 24);
+  ctx.fillText('Cumplimiento del plan: lo que vencía en el periodo y se cerró a tiempo  ·  ● novedad que impide terminar  ·  💬 último comentario  ·  Estado al generar.', M, alto - 24);
   ctx.textAlign = 'right'; ctx.fillText('Mi Foco', ancho - M, alto - 24); ctx.textAlign = 'left';
   return lienzo;
 }
