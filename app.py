@@ -2122,38 +2122,45 @@ def api_ia_resumen_semanal():
             "tareas_completadas": [_limpio({"titulo": t["titulo"], "a_tiempo": t["a_tiempo"], "entregable": t["entregable"]})
                                    for t in x["completadas"]],
             "subtareas_completadas": [f"{v['titulo']} (de «{v['tarea']['titulo']}»)" for v in x["subtareas"]],
-            "tiempo_trabajado": [_limpio({"tarea": t["titulo"], "minutos": t["minutos"],
-                                          "que_se_hizo": [n["nota"] for n in t["notas"]]}) for t in x["trabajadas"]],
+            "tareas_trabajadas": [_limpio({"tarea": t["titulo"], "subtareas": [v["titulo"] for v in t["por_subtarea"]],
+                                           "que_se_hizo": [n["nota"] for n in t["notas"]]}) for t in x["trabajadas"]],
             "comentarios": [f"«{c['tarea']['titulo']}»: {c['texto']}" for c in x["comentarios"]],
             "novedades": [f"{'RESUELTA' if n['resuelta'] else 'ABIERTA'} en «{n['tarea']['titulo']}»: {n['texto']}"
                           for n in x["novedades"]],
-            "aprendizaje": [f"{p['meta']} {p['minutos']} min" + (f": {p['nota']}" if p["nota"] else "") for p in x["practica"]],
+            "aprendizaje": [p["meta"] + (f": {p['nota']}" if p["nota"] else "") for p in x["practica"]],
         })
         if len(item) > 1 and set(item) != {"dia", "festivo"}:
             dias.append(item)
     if not dias:
         raise ValueError("Esa semana no tiene actividad registrada para resumir.")
+    # Para qué sirve cada tarea trabajada: así la IA puede destacar el aporte al objetivo sin inventarlo.
+    ids = {t["id"] for x in s["dias"] for t in x["completadas"] + x["trabajadas"]}
+    ids |= {v["tarea"]["id"] for x in s["dias"] for v in x["subtareas"] + x["comentarios"] + x["novedades"]}
+    with db.conexion() as conn:
+        objetivos = [_limpio({"tarea": t["titulo"], "categoria": t["categoria"], "descripcion": (t["descripcion"] or "")[:300],
+                              "entregable": t["entregable"]})
+                     for t in listar_tareas(conn, incluir_cerradas=True) if t["id"] in ids]
     sistema = ESTILO_IA + """
-Redacta el reporte de lo que se hizo en la semana, para enviarlo a quien hace seguimiento.
-Estilo: prosa breve y fluida, en tercera persona impersonal y en pasado («Se avanzó en…», «quedaron configurados…»,
-«se revisó…»). Nada de títulos, secciones, viñetas, Markdown ni saludos.
-- Organízalo por día: un párrafo por cada día con actividad, en orden, que empieza EXACTAMENTE con el valor de «dia»
-  seguido de dos puntos (p. ej. «Sem46-Lunes: Se avanzó…»). Los días sin actividad no se mencionan.
-- Dentro de cada día, une lo relacionado en frases corridas; si un trabajo continúa otro día, no repitas el contexto.
-- Cuenta qué se hizo con los detalles concretos que aparecen en las notas, subtareas y comentarios (unidades, nombres de
-  documentos, versiones, fechas). Une lo relacionado en una misma frase en vez de enumerarlo.
-- Si hay novedades o pendientes, dilo dentro del mismo párrafo: qué falta y qué se necesita para cerrarlo
-  (p. ej. «Esta subtarea queda abierta hasta que se cargue el documento actualizado.»).
-- No menciones minutos, horas ni porcentajes, salvo que sean parte del contenido.
-- No agregues conclusiones, valoraciones ni próximos pasos que no estén en los datos.
+Redacta el reporte semanal de trabajo para quien hace seguimiento.
+- Un párrafo por cada día con actividad, en orden, que empieza EXACTAMENTE con el valor de «dia» seguido de dos puntos
+  (p. ej. «Sem46-Lunes: …»). Los días sin actividad no se mencionan.
+- Cada párrafo tiene alrededor de 70 palabras (entre 55 y 85): muy concreto y profesional, en tercera persona
+  impersonal y en pasado. Sin títulos, viñetas, Markdown ni saludos.
+- En cada día di en qué tareas y subtareas se trabajó, los logros, los obstáculos o novedades encontrados y cualquier
+  otro dato pertinente, y destaca el aporte de ese trabajo al objetivo del proyecto (apóyate en la descripción, el
+  entregable y la categoría de la tarea y en el contexto del usuario; si no hay datos del objetivo, no lo inventes).
+- Resume: nombra lo esencial y omite los detalles menores (no enumeres carpetas, campos o versiones uno por uno salvo
+  que sean el obstáculo principal).
+- No menciones tiempos (minutos, horas, duración de sesiones) ni porcentajes.
+- No agregues valoraciones ni próximos pasos que no estén en los datos; si algo queda abierto, dilo en una frase.
 
-Ejemplo del tono y la extensión esperados:
-Sem46-Lunes: Se avanzó en la configuración del Setup STO Event: en la U108 quedaron configurados el nombre del evento y las fechas
-de ejecución y finalización, y en la U109 el nombre del evento. En la conformidad de carpetas de la parada PHD U108 se
-revisó la estructura en SharePoint y aparecieron tres pendientes. Las carpetas “0 Comunicaciones y memorandos” y
-“0 Financiero” están vacías, y “00 Seguimiento plan de hitos” no tiene la versión vigente del plan, que es la 8, porque
-solo llega hasta la versión 6. Esta subtarea queda abierta hasta que se cargue el documento actualizado."""
+Ejemplo del tono y la extensión esperados para un día:
+Sem46-Lunes: Se avanzó en el Setup STO Event de las unidades U108 y U109, dejando configurados los datos base del
+evento, lo que habilita el seguimiento de la parada PHD en la herramienta. En la conformidad de carpetas de la U108 se
+identificaron tres pendientes en SharePoint, entre ellos la falta de la versión vigente del plan de hitos; la subtarea
+queda abierta hasta recibir el documento actualizado."""
     usuario = (f"Semana {s['semana']} de {s['anio']} (lunes {s['desde']} a domingo {s['hasta']}).\n"
+               f"Tareas involucradas y su propósito: {_json(objetivos)}\n"
                f"Actividad por día: {_json(dias)}")
     return jsonify(texto=ia.chat(sistema, usuario))
 

@@ -334,7 +334,7 @@ Opciones del `.env` (todas opcionales salvo la clave):
 | **Nueva tarea** | Completar campos | Lo mismo, desde un cuadro al inicio del formulario. |
 | **Nueva/editar tarea** · subtareas | ✨ Sugerir pasos | Propone de 3 a 7 pasos a partir del título, la descripción y el entregable. No repite los que ya tienes; quita los que no apliquen. |
 | **Al pausar** y **comentarios** | ✨ Mejorar redacción | Corrige ortografía y redacción sin agregar información y conserva códigos y siglas (U108, STO…). *↶ Original* devuelve tu texto. |
-| **Historial › Reporte semanal** | ✨ Redactar resumen | Escribe en prosa breve y corrida (sin viñetas) lo que se hizo en la semana elegida, un párrafo por día que empieza con la fecha (p. ej. «Sem46-Lunes: …»), con los detalles de lo que anotaste al pausar, subtareas, comentarios y novedades, y lo que queda abierto. Puedes editarlo y copiarlo. |
+| **Historial › Reporte semanal** | ✨ Redactar resumen | Escribe un párrafo por día con actividad (≈ 70 palabras, sin tiempos) que empieza con «Sem46-Lunes: …»: tareas y subtareas trabajadas, logros, obstáculos y el aporte al objetivo del proyecto (según la descripción y el entregable de cada tarea). Puedes editarlo y copiarlo. |
 | **Reporte de cumplimiento** | ✨ Redactar correo | Escribe el asunto y el texto del correo que acompaña la imagen del reporte, destacando lo vencido o con novedad. *Abrir en el correo* lo pasa a tu programa de correo. |
 | **Rendimiento** | ✨ Analizar mi rendimiento | Diagnóstico del periodo elegido: lo que va bien, patrones a mejorar (con la cifra que los muestra) y tres acciones para las próximas dos semanas. |
 
