@@ -1,7 +1,8 @@
 # ◎ Mi Foco — gestor local de tareas, tiempo y metas de aprendizaje
 
 Servicio en Python (Flask + SQLite) que corre **100 % en tu equipo** y se usa desde el navegador en
-`http://127.0.0.1:5050`. Nada sale a internet: la interfaz no usa CDN ni librerías externas.
+`http://127.0.0.1:5050`. Tus datos no salen a internet: la interfaz no usa CDN ni librerías externas, y la única
+consulta en línea es la de los festivos de Colombia (ver [Festivos](#festivos)).
 
 ## Arranque rápido
 
@@ -20,6 +21,111 @@ python app.py                   # opciones: --puerto 8080  --sin-navegador
 2. `Win + R` → `shell:startup` → crea ahí un **acceso directo** a `iniciar_oculto.vbs`.
 3. Queda corriendo en segundo plano sin consola; abre `http://127.0.0.1:5050` cuando quieras
    (te sugiero guardarlo como favorito o "instalarlo" como app desde el menú de Edge/Chrome).
+
+> **Si tu equipo no deja ejecutar `.bat`:** desde la terminal de VS Code (o PowerShell), dentro de la carpeta del proyecto:
+> ```powershell
+> python -m venv .venv
+> .venv\Scripts\python.exe -m pip install -r requirements.txt
+> .venv\Scripts\python.exe app.py
+> ```
+
+### Detener, actualizar y reiniciar con un comando: `restartmifoco`
+
+Como Mi Foco corre oculto (sin ventana), para traer cambios de GitHub hay que **detenerlo, hacer `git pull` y
+volver a arrancarlo**. La función de PowerShell `restartmifoco` hace las tres cosas:
+
+1. Detiene el proceso que está usando el puerto **5050** (solo Mi Foco; no toca otros programas de Python).
+2. Hace `git pull`, muestra los cambios que llegaron y, si cambió `requirements.txt`, reinstala dependencias.
+3. Arranca Mi Foco **oculto** y confirma que quedó corriendo en `http://127.0.0.1:5050`.
+
+**Instalarla (una sola vez).** Abre tu perfil de PowerShell (sirve para PowerShell, Terminal y VS Code):
+
+```powershell
+if (!(Test-Path $PROFILE.CurrentUserAllHosts)) { New-Item -ItemType File -Path $PROFILE.CurrentUserAllHosts -Force }
+notepad $PROFILE.CurrentUserAllHosts
+```
+
+Pega esta función, guarda y cierra (si tu carpeta no es `C:\Gary\mi_foco`, cambia `$carpeta`):
+
+```powershell
+function restartmifoco {
+    $carpeta = 'C:\Gary\mi_foco'
+    $puerto  = 5050
+    Push-Location $carpeta
+    try {
+        # 1. Detener lo que este usando el puerto de Mi Foco
+        $pids = Get-NetTCPConnection -LocalPort $puerto -State Listen -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty OwningProcess -Unique
+        if ($pids) { $pids | ForEach-Object { Stop-Process -Id $_ -Force }; Write-Host 'Mi Foco detenido' -ForegroundColor Yellow; Start-Sleep 1 }
+        else { Write-Host 'Mi Foco no estaba corriendo' -ForegroundColor DarkGray }
+
+        # 2. Traer cambios
+        $antes = git rev-parse HEAD
+        git pull
+        if ($LASTEXITCODE -ne 0) { Write-Host 'ERROR en git pull: se reinicia sin actualizar' -ForegroundColor Red }
+        $despues = git rev-parse HEAD
+        if ($antes -ne $despues) {
+            Write-Host 'Cambios nuevos:' -ForegroundColor Cyan
+            git log --oneline "$antes..$despues"
+            if ((git diff --name-only $antes $despues) -contains 'requirements.txt') {
+                Write-Host 'Actualizando dependencias...' -ForegroundColor Cyan
+                & "$carpeta\.venv\Scripts\python.exe" -m pip install -q -r requirements.txt
+            }
+        }
+
+        # 3. Arrancar oculto y confirmar
+        Start-Process "$carpeta\.venv\Scripts\pythonw.exe" -ArgumentList 'app.py','--sin-navegador' -WorkingDirectory $carpeta -WindowStyle Hidden
+        foreach ($i in 1..20) {
+            Start-Sleep -Milliseconds 500
+            if (Get-NetTCPConnection -LocalPort $puerto -State Listen -ErrorAction SilentlyContinue) {
+                Write-Host "Mi Foco corriendo en http://127.0.0.1:$puerto" -ForegroundColor Green; return
+            }
+        }
+        Write-Host 'Mi Foco no arranco. Para ver el error ejecuta: .venv\Scripts\python.exe app.py' -ForegroundColor Red
+    } finally { Pop-Location }
+}
+```
+
+> Los mensajes van sin tildes a propósito: Windows PowerShell 5 lee mal los acentos de un perfil guardado con el Bloc de notas.
+
+Cárgala en la terminal actual (las terminales nuevas la cargan solas):
+
+```powershell
+. $PROFILE.CurrentUserAllHosts
+```
+
+**Usarla:** en cualquier terminal escribe
+
+```powershell
+restartmifoco
+```
+
+Verás *Mi Foco detenido*, el resultado del `git pull` y, en verde, *Mi Foco corriendo en http://127.0.0.1:5050*.
+Luego recarga la página con `Ctrl + F5`.
+
+**Si la terminal dice que la ejecución de scripts está deshabilitada,** el perfil no se carga. Este comando lo habilita
+solo para tu usuario y no requiere administrador:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+Si tu empresa tiene esa política bloqueada, pega la función directamente en la terminal: funciona durante esa sesión.
+
+**Hacerlo a mano (sin la función):**
+
+```powershell
+Get-NetTCPConnection -LocalPort 5050 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess }   # detener
+git pull                                                                                                     # actualizar
+Start-Process .venv\Scripts\pythonw.exe -ArgumentList "app.py --sin-navegador" -WorkingDirectory C:\Gary\mi_foco -WindowStyle Hidden   # arrancar
+```
+
+O desde el Administrador de tareas (`Ctrl + Shift + Esc`) → pestaña **Detalles** → `pythonw.exe` (el de `app.py`
+en la columna *Línea de comandos*) → *Finalizar tarea*.
+
+**¿Cuándo hace falta reiniciar?** Si el cambio fue solo de la interfaz (archivos de `static/`), basta con `git pull`
+y `Ctrl + F5`. Si cambió el servidor (`app.py`, `db.py`, `festivos.py`…) o la base de datos, reinicia; con
+`restartmifoco` no tienes que pensarlo: siempre hace todo.
 
 ## Qué hace
 
