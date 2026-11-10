@@ -28,6 +28,7 @@ const st = {
   catalogos: { categorias: [], descripciones: [] },
   subInvertidas: new Set(),
   subHoy: new Set(),
+  expandidas: new Set(),       // tareas desplegadas en la vista Tareas
   hist: { tab: 'semana', anio: null, semana: null },          // en Hoy van plegadas; aquí las que el usuario abrió   // tareas cuya lista de subtareas el usuario abrió/cerró a mano
   filtros: { estado: 'abiertas', prioridad: '', categoria: '', q: '' },
   periodo: 30,
@@ -226,8 +227,8 @@ function checklistSubtareas(t, conAgregar = true) {
       <span>${s.es_entregable ? '<em class="tag-entregable">📦 Entregable</em> ' : ''}${esc(s.titulo)}</span></label>
       ${s.tiempo_min > 0 || s.sesion_abierta ? `<span class="tiempo-sub" title="Tiempo trabajado en esta subtarea">⏱ ${fmtMin(s.tiempo_min)}</span>` : ''}
       ${!s.completada && abierta(t) ? (s.sesion_abierta
-        ? `<button type="button" class="crono-sub en-curso" data-sub-accion="pausar" data-sub="${s.id}" data-tarea="${t.id}" title="Pausar">⏸</button>`
-        : `<button type="button" class="crono-sub" data-sub-accion="iniciar" data-sub="${s.id}" data-tarea="${t.id}" title="Iniciar el tiempo en esta subtarea">▶</button>`) : ''}
+        ? `<button type="button" class="crono-sub en-curso" data-sub-accion="pausar" data-sub="${s.id}" data-tarea="${t.id}" title="Pausar">${ICO_PAUSA}</button>`
+        : `<button type="button" class="crono-sub" data-sub-accion="iniciar" data-sub="${s.id}" data-tarea="${t.id}" title="Iniciar el tiempo en esta subtarea">${ICO_PLAY}</button>`) : ''}
       ${s.completada && s.completada_en ? `<button type="button" class="fecha-sub" data-fecha-subtarea="${s.id}" data-tarea="${t.id}" title="Cambiar la fecha en que se completó">✅ ${fmtFecha(s.completada_en)} <span class="lapiz">✎</span></button>` : ''}</li>`).join('')}</ul>
     ${conAgregar && abierta(t) ? `<form class="f-subtarea" data-tarea="${t.id}"><input name="titulo" placeholder="+ Agregar subtarea y Enter" autocomplete="off"></form>` : ''}`;
 }
@@ -304,65 +305,130 @@ function requisitoDesdeValor(valor) {
   return null;
 }
 
-function tarjetaTarea(t, { compacta = false } = {}) {
-  const expandida = compacta ? st.subHoy.has(t.id) : subExpandida(t);
-  const acc = [];
-  const sigSub = siguienteSubtarea(t);
-  if (t.tiempo_por_subtareas && abierta(t)) {
-    // El cronómetro se maneja desde las subtareas: acceso rápido a la que está corriendo o a la siguiente pendiente.
-    if (t.subtarea_en_curso) acc.push(`<button class="mini" data-sub-accion="pausar" data-sub="${t.subtarea_en_curso.id}" data-tarea="${t.id}" title="Pausar la subtarea en curso">⏸ ${esc(recorte(t.subtarea_en_curso.titulo, 18))}</button>`);
-    else if (sigSub) acc.push(`<button class="mini" data-sub-accion="iniciar" data-sub="${sigSub.id}" data-tarea="${t.id}" title="Iniciar el tiempo en la subtarea «${esc(sigSub.titulo)}»">▶ ${esc(recorte(sigSub.titulo, 18))}</button>`);
-  } else if (['pendiente', 'pausada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="iniciar" data-id="${t.id}">▶ ${t.estado === 'pausada' ? 'Reanudar' : 'Iniciar'}</button>`);
-  if (t.estado === 'en_progreso' && !t.subtarea_en_curso) acc.push(`<button class="mini" data-accion="pausar" data-id="${t.id}">⏸ Pausar</button>`);
-  if (abierta(t)) acc.push(`<button class="mini ok" data-accion="completar" data-id="${t.id}">✓ Completar</button>`);
-  if (['completada', 'cancelada'].includes(t.estado)) acc.push(`<button class="mini" data-accion="reabrir" data-id="${t.id}">↺ Reabrir</button>`);
+/** Línea de resumen de una tarea contraída: lo esencial en texto corto. */
+function resumenTarea(t) {
+  const p = [`<span class="r-cat">${iconoCategoria(t.categoria)}${esc(t.categoria)}</span>`];
+  if (t.estado === 'completada') p.push(`<span class="txt-verde">✓ Completada ${cuandoCorto(t.completada_en)}${t.completada_a_tiempo === false ? ' · con atraso' : ''}</span>`);
+  else if (t.estado === 'cancelada') p.push('Cancelada');
+  else if (t.subtarea_en_curso) p.push(`<span class="txt-acento">▶ en «${esc(recorte(t.subtarea_en_curso.titulo, 30))}»</span>`);
+  else if (t.estado === 'en_progreso') p.push('<span class="txt-acento">▶ en marcha</span>');
+  else if (t.vencida) p.push(`<span class="txt-rojo">Vencida hace ${fmtDias(t.dias_atraso)}</span>`);
+  else if (t.horas_restantes != null && t.horas_restantes <= 24) p.push(`<span class="txt-ambar">Vence ${cuandoCorto(t.fecha_limite)}</span>`);
+  else if (t.bloqueada) p.push('🔒 En espera');
+  else if (t.estado === 'pausada') p.push('Pausada');
+  else if (t.fecha_limite) p.push(`Vence ${cuandoCorto(t.fecha_limite)}`);
+  if (t.bloqueada && (t.vencida || t.estado === 'pausada')) p.push('🔒 en espera');
+  if (t.subtareas_total) p.push(`${t.subtareas_hechas}/${t.subtareas_total} subtareas`);
+  if (t.meta_nombre) p.push(`◆ ${esc(recorte(t.meta_nombre, 24))}`);
+  const extra = [t.comentarios_total ? `💬 ${t.comentarios_total}` : '', t.adjuntos_total ? `📎 ${t.adjuntos_total}` : ''].filter(Boolean).join('  ');
+  if (extra) p.push(extra);
+  return p.join('<i class="sep">·</i>');
+}
 
-  const chips = [`<span class="chip chip-cat">${iconoCategoria(t.categoria)}${esc(t.categoria)}</span>`];
-  if (t.estado === 'completada' && t.completada_en) {
-    chips.push(`<button type="button" class="chip chip-fecha" data-fecha-completado="${t.id}" title="Cambiar la fecha de completado">✅ ${fmtFecha(t.completada_en)} <span class="lapiz">✎</span></button>`);
-  } else if (t.estado !== 'pendiente') {
-    chips.push(`<span class="chip ${t.estado === 'en_progreso' ? 'azul' : ''}">${ESTADOS[t.estado]}</span>`);
+/** Acción principal de una tarea (la que más probablemente quieres hacer ahora). */
+function accionPrincipal(t, conTexto) {
+  const sig = t.tiempo_por_subtareas && abierta(t) ? siguienteSubtarea(t) : null;
+  const b = (attrs, ico, texto, clase = '') => conTexto
+    ? `<button class="btn-acc principal ${clase}" ${attrs}>${ico}<span>${texto}</span></button>`
+    : `<button class="btn-redondo ${clase}" ${attrs} title="${esc(texto)}">${ico}</button>`;
+  if (t.subtarea_en_curso) return b(`data-sub-accion="pausar" data-sub="${t.subtarea_en_curso.id}" data-tarea="${t.id}"`, ICO_PAUSA, `Pausar «${esc(recorte(t.subtarea_en_curso.titulo, 22))}»`, 'activo');
+  if (t.estado === 'en_progreso') return b(`data-accion="pausar" data-id="${t.id}"`, ICO_PAUSA, 'Pausar', 'activo');
+  if (sig) return b(`data-sub-accion="iniciar" data-sub="${sig.id}" data-tarea="${t.id}"`, ICO_PLAY, `Iniciar «${esc(recorte(sig.titulo, 22))}»`);
+  if (['pendiente', 'pausada'].includes(t.estado)) return b(`data-accion="iniciar" data-id="${t.id}"`, ICO_PLAY, t.estado === 'pausada' ? 'Reanudar' : 'Iniciar');
+  return b(`data-accion="reabrir" data-id="${t.id}"`, '↺', 'Reabrir', 'neutro');
+}
+
+function tarjetaTarea(t) {
+  const desplegada = st.expandidas.has(t.id);
+  const estadoTxt = t.subtarea_en_curso ? `En progreso · ▶ «${esc(t.subtarea_en_curso.titulo)}»` : ESTADOS[t.estado];
+  let limite = '—';
+  if (t.fecha_limite) {
+    limite = fmtFecha(t.fecha_limite);
+    if (t.vencida) limite += ` <span class="txt-rojo">· vencida hace ${fmtDias(t.dias_atraso)}</span>`;
+    else if (t.estado === 'completada' && t.completada_a_tiempo === false) limite += ` <span class="txt-rojo">· entregada con ${fmtDias(t.dias_atraso)} de atraso</span>`;
+    else if (t.estado === 'completada') limite += ' <span class="txt-verde">· a tiempo</span>';
   }
-  if (t.meta_nombre) chips.push(`<span class="chip azul">◆ ${esc(t.meta_nombre)}</span>`);
-  chips.push(etiquetaLimite(t));
-  if (t.subtarea_en_curso) chips.push(`<span class="chip azul" title="Subtarea con el cronómetro en marcha">▶ en «${esc(recorte(t.subtarea_en_curso.titulo, 28))}»</span>`);
-  if (t.entregable && t.estado !== 'completada') {
-    chips.push(`<span class="chip ${t.entregable_listo ? 'verde' : ''}" title="Entregable: ${esc(t.entregable)}">📦 ${t.entregable_listo ? 'Entregable listo' : 'Entregable pendiente'}</span>`);
-  }
-  chips.push(chipsDependencia(t));
-  if (t.adjuntos_total) {
-    chips.push(`<button type="button" class="chip chip-adj" data-detalle="${t.id}" data-ir-soporte title="Archivos y enlaces de soporte">📎 ${t.adjuntos_total}</button>`);
-  }
-  if (t.comentarios_total) {
-    chips.push(`<button type="button" class="chip chip-coment" data-detalle="${t.id}" data-ir-comentarios title="Último comentario: ${esc(fmtFecha(t.ultimo_comentario))}">💬 ${t.comentarios_total}</button>`);
-  }
-  if (t.tiempo_real_min > 0 || t.estimado_min) {
-    const real = fmtMin(t.tiempo_real_min);
-    const est = t.estimado_min ? ` / ${fmtMin(t.estimado_min)}` : '';
-    const exceso = t.estimado_min && t.tiempo_real_min > t.estimado_min;
-    chips.push(`<span class="chip ${exceso ? 'ambar' : ''}">⏱ ${real}${est}</span>`);
-  }
-  return `<article class="tarea est-${t.estado} ${t.vencida ? 'vencida' : ''} ${t.bloqueada ? 'bloqueada' : ''}">
-    <div class="prio prio-${t.prioridad}" title="${esc(PRIORIDADES[t.prioridad])}">${t.prioridad}</div>
-    <div class="t-cuerpo">
-      <div class="t-titulo" data-detalle="${t.id}">${t.bloqueada ? '🔒 ' : ''}${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</div>
-      <div class="t-meta">${chips.join('')}</div>
-      ${barraAvance(t, true, expandida, compacta)}
-      ${t.subtareas_total && expandida ? checklistSubtareas(t) : ''}
+  const exceso = t.estimado_min && t.tiempo_real_min > t.estimado_min;
+  const info = [
+    ['Estado', estadoTxt],
+    ['Fecha límite', limite],
+    t.estado === 'completada' && t.completada_en
+      ? ['Completada', `<button type="button" class="enlace-fecha" data-fecha-completado="${t.id}" title="Cambiar la fecha de completado">${fmtFecha(t.completada_en)} ✎</button>`] : null,
+    ['Tiempo', `<span class="${exceso ? 'txt-ambar' : ''}">${fmtMin(t.tiempo_real_min)}</span>${t.estimado_min ? ` <span class="sutil-i">de ${fmtMin(t.estimado_min)} estimados</span>` : ''}`],
+    ['Categoría', `${iconoCategoria(t.categoria)}${esc(t.categoria)}`],
+    t.meta_nombre ? ['Meta', `◆ ${esc(t.meta_nombre)}`] : null,
+    t.entregable ? ['Entregable', `📦 ${esc(t.entregable)} ${t.entregable_listo ? '<span class="txt-verde">✓</span>' : ''}`] : null,
+    t.dependencias.length ? ['Depende de', t.dependencias.map((d) => `${d.completa ? '✓' : '⏳'} <a href="#" data-detalle="${d.tarea_id}">${esc(nombreRequisito(d))}</a>`).join('<br>')] : null,
+    t.frena_a && t.frena_a.length ? ['Frena a', t.frena_a.map((x) => `⛓ <a href="#" data-detalle="${x.id}">${esc(x.titulo)}</a>`).join('<br>')] : null,
+    ['Soporte', t.adjuntos_total ? `<a href="#" data-detalle="${t.id}" data-ir-soporte>📎 ${t.adjuntos_total} archivo(s)/enlace(s)</a>` : '<span class="sutil-i">—</span>'],
+    ['Comentarios', t.comentarios_total ? `<a href="#" data-detalle="${t.id}" data-ir-comentarios>💬 ${t.comentarios_total} · último ${cuandoCorto(t.ultimo_comentario)}</a>` : '<span class="sutil-i">—</span>'],
+  ].filter(Boolean);
+
+  const principal = `
+    ${t.descripcion ? `<p class="t-desc">${esc(t.descripcion)}</p>` : ''}
+    ${t.subtareas_total ? `${barraAvance(t, false)}${checklistSubtareas(t)}`
+      : abierta(t) ? `<p class="sutil-i t-sin-sub">Sin subtareas.</p>${checklistSubtareas(t)}` : '<p class="sutil-i t-sin-sub">Sin subtareas.</p>'}`;
+
+  const secundarias = [
+    `<button class="btn-acc" data-detalle="${t.id}" data-ir-comentarios><span class="i">💬</span><span>Comentar</span></button>`,
+    `<button class="btn-acc" data-editar="${t.id}"><span class="i">✎</span><span>Editar</span></button>`,
+    `<button class="btn-acc" data-duplicar="${t.id}"><span class="i">⧉</span><span>Duplicar</span></button>`,
+    `<button class="btn-acc" data-detalle="${t.id}"><span class="i">↗</span><span>Ver detalle</span></button>`,
+  ];
+  const peligrosas = [
+    abierta(t) ? `<button class="btn-acc solo-ico" data-accion="cancelar" data-id="${t.id}" title="Cancelar tarea">⊘</button>` : '',
+    `<button class="btn-acc solo-ico peligro" data-eliminar="${t.id}" title="Eliminar tarea">🗑</button>`,
+  ].join('');
+
+  return `<article class="tarea est-${t.estado} ${t.vencida ? 'vencida' : ''} ${t.bloqueada ? 'bloqueada' : ''} ${desplegada ? 'abierta' : ''}" data-tarea-id="${t.id}">
+    <div class="t-fila" data-toggle-tarea="${t.id}">
+      <div class="prio prio-${t.prioridad}" title="${esc(PRIORIDADES[t.prioridad])}">${t.prioridad}</div>
+      <div class="t-cuerpo">
+        <div class="t-titulo">${t.bloqueada ? '🔒 ' : ''}${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</div>
+        <div class="t-resumen">${resumenTarea(t)}</div>
+      </div>
+      ${t.subtareas_total ? `<div class="mini-avance" title="${t.subtareas_hechas} de ${t.subtareas_total} subtareas"><div style="width:${t.progreso_pct}%"></div></div>` : ''}
+      <div class="t-rapidas">
+        ${accionPrincipal(t, false)}
+        <button class="chevron" data-toggle-tarea="${t.id}" aria-expanded="${desplegada}" title="${desplegada ? 'Contraer' : 'Ver más detalles'}">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 6l4 4 4-4"/></svg>
+        </button>
+      </div>
     </div>
-    <div class="t-acciones">${acc.join('')}
-      <button class="ico" data-detalle="${t.id}" data-ir-comentarios title="Comentarios">💬</button>
-      <button class="ico" data-editar="${t.id}" title="Editar">✎</button>
-      ${compacta ? '' : `<button class="ico" data-duplicar="${t.id}" title="Duplicar">⧉</button>
-      ${abierta(t) ? `<button class="ico" data-accion="cancelar" data-id="${t.id}" title="Cancelar">⊘</button>` : ''}
-      <button class="ico" data-eliminar="${t.id}" title="Eliminar">🗑</button>`}
+    <div class="t-detalle" ${desplegada ? '' : 'inert'}>
+      <div class="t-detalle-int"><div class="t-detalle-cont">
+        <div class="t-det-grid">
+          <div class="t-det-principal">${principal}</div>
+          <dl class="t-det-info">${info.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+        </div>
+        <div class="t-barra">
+          <div class="t-barra-izq">
+            ${accionPrincipal(t, true)}
+            ${abierta(t) ? `<button class="btn-acc ok" data-accion="completar" data-id="${t.id}">${ICO_OK}<span>Completar</span></button>` : ''}
+          </div>
+          <div class="t-barra-der">${secundarias.join('')}<span class="t-barra-sep"></span>${peligrosas}</div>
+        </div>
+      </div></div>
     </div>
   </article>`;
 }
 
-function listaTareas(tareas, vacio = 'Nada por aquí.', opciones = {}) {
+/** Despliega / contrae una tarea sin volver a dibujar la lista (animado). */
+function alternarTarea(id, abrir) {
+  const art = document.querySelector(`article.tarea[data-tarea-id="${id}"]`);
+  const abrirla = abrir ?? !st.expandidas.has(id);
+  if (abrirla) st.expandidas.add(id); else st.expandidas.delete(id);
+  if (!art) return;
+  art.classList.toggle('abierta', abrirla);
+  art.querySelector('.t-detalle').toggleAttribute('inert', !abrirla);
+  const ch = art.querySelector('.chevron');
+  ch.setAttribute('aria-expanded', String(abrirla));
+  ch.title = abrirla ? 'Contraer' : 'Ver más detalles';
+}
+
+function listaTareas(tareas, vacio = 'Nada por aquí.') {
   if (!tareas.length) return `<div class="vacio">${vacio}</div>`;
-  return `<div class="lista">${tareas.map((t) => tarjetaTarea(t, opciones)).join('')}</div>`;
+  return `<div class="lista">${tareas.map((t) => tarjetaTarea(t)).join('')}</div>`;
 }
 
 function graficoBarras(datos, formato = (v) => v, clase = '') {
@@ -554,7 +620,10 @@ function filtrarTareas() {
 
 function htmlListaTareas() {
   const lista = filtrarTareas();
-  return `<p class="sutil" style="margin-bottom:10px">${lista.length} tarea(s)</p>` + listaTareas(lista, '<span class="grande">🔍</span>No hay tareas con esos filtros.');
+  const todas = lista.length && lista.every((t) => st.expandidas.has(t.id));
+  return `<div class="lista-cab"><span class="sutil">${lista.length} tarea(s)</span>
+      ${lista.length ? `<button class="enlace" data-desplegar-todas="${todas ? '0' : '1'}">${todas ? '⌃ Contraer todas' : '⌄ Desplegar todas'}</button>` : ''}</div>`
+    + listaTareas(lista, '<span class="grande">🔍</span>No hay tareas con esos filtros.');
 }
 function pintarListaTareas() {
   const el = $('#lista-tareas');
@@ -1566,6 +1635,24 @@ document.addEventListener('keydown', (e) => {
   }
 });
 $('#btn-nueva').addEventListener('click', () => formTarea());
+
+/* Desplegar / contraer tareas: clic en la flecha o en cualquier parte libre de la fila. */
+document.addEventListener('click', (e) => {
+  const fila = e.target.closest('[data-toggle-tarea]');
+  if (fila) {
+    const interactivo = e.target.closest('button, a, input, select, label, form');
+    if (interactivo && !interactivo.hasAttribute('data-toggle-tarea')) return;
+    alternarTarea(Number(fila.dataset.toggleTarea));
+    return;
+  }
+  const todas = e.target.closest('[data-desplegar-todas]');
+  if (todas) {
+    const abrir = todas.dataset.desplegarTodas === '1';
+    filtrarTareas().forEach((t) => alternarTarea(t.id, abrir));
+    todas.dataset.desplegarTodas = abrir ? '0' : '1';
+    todas.textContent = abrir ? '⌃ Contraer todas' : '⌄ Desplegar todas';
+  }
+});
 $('#btn-catalogos').addEventListener('click', () => gestionarCatalogos());
 $('#btn-reporte').addEventListener('click', () => abrirReporte());
 
