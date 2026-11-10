@@ -25,7 +25,7 @@ python app.py                   # opciones: --puerto 8080  --sin-navegador
 
 | Módulo | Funciones |
 |---|---|
-| **Hoy** | Ocupa exactamente la pantalla, sin scroll de página: frase del día e indicadores arriba, rana y captura rápida en medio, y tres paneles (En curso, Vencidas/por vencer, Otras A) que se desplazan por dentro si tienen muchas tareas. Frase del día (principio + práctica accionable), tu 🐸 *rana* del día, KPIs, captura rápida, tareas en curso, vencidas/por vencer y otras A. |
+| **Hoy** | Vista tranquila que ocupa la pantalla sin scroll. Arriba, la frase del día en una línea discreta y un resumen (pendientes, vencidas, hechas hoy, foco y racha). En el centro, **tu 🐸 rana** como protagonista con su botón *Comer la rana ▶* (si tiene subtareas, arranca por la siguiente), junto a la captura rápida. Abajo, tres paneles con **filas simples** (En curso, Vencidas y por vencer, Otras A): prioridad, título y un dato clave; ▶ y ✓ aparecen al pasar el mouse y el detalle está a un clic. Al abrir la app las alertas no saltan como avisos: quedan en la campana 🔔. |
 | **Tareas** | CRUD completo, prioridad **ABCDE**, categoría, fecha límite, tiempo estimado, vínculo a una meta, filtros y búsqueda. Iniciar / pausar / completar / reabrir / cancelar. |
 | **Categorías y descripciones** | Se guardan solas en la base cada vez que las usas. Al crear una tarea eliges la categoría de una lista (o "＋ Nueva categoría…") y puedes cargar una descripción guardada. Desde *🏷 Categorías y descripciones* (barra lateral) agregas, renombras (actualiza todas sus tareas) o quitas. Cada categoría puede llevar un **emoji o una imagen propia** (se recorta a 96×96 y se guarda en la base), que se muestra en las tareas, filtros y estadísticas. |
 | **Entregable** | Al crear una tarea se pregunta qué debe existir para darla por terminada (📦). Se guarda como la última subtarea, marcada como entregable, y cuenta en el % de avance. Si creas una tarea sin entregable, te lo recuerda. Puedes cambiarlo o quitarlo al editar. |
@@ -42,7 +42,7 @@ python app.py                   # opciones: --puerto 8080  --sin-navegador
 | **Historial** | Dos pestañas. *📅 Reporte semanal*: eliges el número de semana (ISO, p. ej. 46) y el año, o navegas con ‹ ›; muestra de qué día a qué día va (lunes a domingo), los **festivos de Colombia** y, **día por día**, las tareas completadas (a tiempo o con atraso), subtareas completadas, tiempo trabajado por tarea, comentarios y práctica de aprendizaje, con un resumen de la semana (días hábiles, completadas por día hábil). *📜 Bitácora de eventos*: el registro de todo lo que le pasó a cada tarea. |
 | **Alertas** | Vencidas, vencen en < 24 h, rana sin empezar después de las 11 a. m., sesión de más de 90 min (descanso), metas en riesgo o vencidas, metas sin práctica en 7 días. Notificaciones del sistema (actívalas en la barra lateral) y revisión cada minuto. |
 
-Atajo: tecla **N** abre "Nueva tarea".
+Atajo: tecla **N** abre "Nueva tarea" (en Metas, "Nueva meta"). Reportes, exportaciones, categorías, notificaciones y respaldo están en el menú **⚙ Herramientas**, abajo en la barra lateral.
 
 ## Cómo se calculan las métricas
 

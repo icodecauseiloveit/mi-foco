@@ -90,7 +90,7 @@ function fmtMin(m) {
 function fmtDias(d) {
   if (d == null) return '—';
   if (d < 1) return `${Math.max(1, Math.round(d * 24))} h`;
-  return `${Number(d.toFixed(1))} d`;
+  return `${String(Number(d.toFixed(1))).replace('.', ',')} d`;
 }
 const abierta = (t) => ABIERTOS.includes(t.estado);
 function ordenPrioridad(a, b) {
@@ -399,61 +399,137 @@ async function vistaHoy() {
   const rana = abiertas.filter((t) => t.es_rana).sort(ordenPrioridad)[0] || abiertas.filter((t) => t.prioridad === 'A').sort(ordenPrioridad)[0];
   const usadas = new Set([rana, ...vencidas, ...pronto, ...enCurso].filter(Boolean).map((t) => t.id));
   const prioA = abiertas.filter((t) => t.prioridad === 'A' && !usadas.has(t.id)).sort(ordenPrioridad);
+  const sinRana = (lista) => lista.filter((t) => !rana || t.id !== rana.id);  // la rana ya está destacada arriba
 
-  const bloqueRana = rana ? `
-    <div class="tarjeta rana">
-      <div class="emoji">🐸</div>
-      <div class="cuerpo"><span class="sutil">${rana.es_rana ? 'Tu rana de hoy' : 'Tu tarea A más importante'}</span>
-        <b>${rana.bloqueada ? '🔒 ' : ''}${esc(rana.titulo)}</b>${etiquetaLimite(rana)}${chipsDependencia(rana)}${barraAvance(rana, false)}</div>
-      ${rana.estado === 'en_progreso'
+  // ── La rana: lo más importante del día, en grande
+  let bloqueRana;
+  if (rana) {
+    const sig = rana.tiempo_por_subtareas ? siguienteSubtarea(rana) : null;
+    const corriendo = rana.subtarea_en_curso || rana.estado === 'en_progreso';
+    const detalle = [];
+    if (rana.vencida) detalle.push(`<span class="txt-rojo">Vencida hace ${fmtDias(rana.dias_atraso)}</span>`);
+    else if (rana.fecha_limite) detalle.push(`Vence ${fmtFecha(rana.fecha_limite)}`);
+    if (rana.subtareas_total) detalle.push(`${rana.subtareas_hechas}/${rana.subtareas_total} subtareas`);
+    if (rana.bloqueada) detalle.push('🔒 en espera de otra tarea');
+    if (sig && !rana.subtarea_en_curso) detalle.push(`siguiente: ${esc(sig.titulo)}`);
+    if (rana.subtarea_en_curso) detalle.push(`<span class="txt-acento">▶ en «${esc(rana.subtarea_en_curso.titulo)}»</span>`);
+    else if (rana.estado === 'en_progreso') detalle.push('<span class="txt-acento">▶ en marcha</span>');
+    const boton = rana.subtarea_en_curso
+      ? `<button class="secundario" data-sub-accion="pausar" data-sub="${rana.subtarea_en_curso.id}" data-tarea="${rana.id}">⏸ Pausar</button>`
+      : rana.estado === 'en_progreso' && !sig
         ? `<button class="exito" data-accion="completar" data-id="${rana.id}">✓ Terminé</button>`
-        : rana.tiempo_por_subtareas && siguienteSubtarea(rana)
-          ? `<button class="primario" data-sub-accion="iniciar" data-sub="${siguienteSubtarea(rana).id}" data-tarea="${rana.id}" title="Empieza por «${esc(siguienteSubtarea(rana).titulo)}»">Comer la rana ▶</button>`
-          : `<button class="primario" data-accion="iniciar" data-id="${rana.id}">Comer la rana ▶</button>`}
-    </div>`
-    : `<div class="tarjeta rana"><div class="emoji">🐸</div><div class="cuerpo"><b>No tienes una “rana” definida</b>
-      <span class="sutil">Marca como rana la tarea más importante y difícil del día y hazla primero.</span></div></div>`;
+        : sig
+          ? `<button class="primario grande" data-sub-accion="iniciar" data-sub="${sig.id}" data-tarea="${rana.id}">Comer la rana ▶</button>`
+          : `<button class="primario grande" data-accion="iniciar" data-id="${rana.id}">Comer la rana ▶</button>`;
+    bloqueRana = `<section class="tarjeta rana-hero ${corriendo ? 'en-marcha' : ''}">
+      <div class="rana-emoji">🐸</div>
+      <div class="rana-cuerpo">
+        <span class="rana-etiqueta">${rana.es_rana ? 'Tu rana de hoy' : 'Lo más importante hoy'}</span>
+        <a href="#" class="rana-titulo" data-detalle="${rana.id}">${esc(rana.titulo)}</a>
+        ${detalle.length ? `<div class="rana-detalle">${detalle.join(' · ')}</div>` : ''}
+        ${rana.subtareas_total ? `<div class="progreso fino"><div style="width:${rana.progreso_pct}%"></div></div>` : ''}
+      </div>
+      ${boton}
+    </section>`;
+  } else {
+    bloqueRana = `<section class="tarjeta rana-hero vacia">
+      <div class="rana-emoji">🐸</div>
+      <div class="rana-cuerpo"><span class="rana-etiqueta">Tu rana de hoy</span>
+        <span class="rana-titulo apagado">Aún no eliges tu tarea más importante</span>
+        <div class="rana-detalle">Márcala como 🐸 al crearla o editarla y hazla primero.</div></div>
+    </section>`;
+  }
 
-  const panel = (titulo, lista, vacio, clase = '') => `
-    <section class="tarjeta panel-hoy ${clase}">
-      <h3>${titulo} <small>${lista.length}</small></h3>
-      <div class="panel-cuerpo">${listaTareas(lista, vacio, { compacta: true })}</div>
+  // ── Resumen: una línea discreta; el rojo solo aparece si hay vencidas
+  const nVenc = abiertas.filter((t) => t.vencida).length;
+  const resumen = `<div class="resumen-hoy">
+      <div><b>${abiertas.length}</b><span>pendientes</span></div>
+      <div class="${nVenc ? 'con-vencidas' : ''}"><b>${nVenc}</b><span>vencida${nVenc === 1 ? '' : 's'}</span></div>
+      <div><b>${completadasHoy.length}</b><span>hechas hoy</span></div>
+      <div><b>${fmtMin(stats.minutos_foco)}</b><span>de foco${stats.racha_dias ? ` · 🔥 ${stats.racha_dias}` : ''}</span></div>
+    </div>`;
+
+  const panel = (titulo, lista, vacio, tipo) => `
+    <section class="tarjeta panel-hoy">
+      <h3>${titulo}${lista.length ? ` <span class="cuenta ${tipo === 'urgente' ? 'roja' : ''}">${lista.length}</span>` : ''}</h3>
+      <div class="panel-cuerpo">${lista.length ? `<ul class="filas-hoy">${lista.map((t) => filaHoy(t, tipo)).join('')}</ul>` : `<div class="vacio-hoy">${vacio}</div>`}</div>
     </section>`;
 
   return `<div class="hoy">
     <div class="hoy-sup">
-      <div class="tarjeta frase">
-        <div class="etiqueta">Frase del día · ${esc(frase.principio)}</div>
-        <blockquote>${esc(frase.texto)}</blockquote>
-        <div class="practica">💡 ${esc(frase.practica)}</div>
-        <button class="otra" data-otra-frase>Otra ↻</button>
+      <div class="frase-suave" title="${esc(frase.principio)} — ${esc(frase.practica)}">
+        <span class="comillas">“</span>
+        <div><p>${esc(frase.texto)}</p><small>${esc(frase.principio)} · 💡 ${esc(frase.practica)}</small></div>
+        <button class="ico" data-otra-frase title="Otra frase">↻</button>
       </div>
-      <div class="hoy-kpis">
-        ${kpi(abiertas.length, 'Pendientes')}
-        ${kpi(vencidas.length, 'Vencidas', '', vencidas.length ? 'rojo' : '')}
-        ${kpi(completadasHoy.length, 'Completadas hoy', '', 'verde')}
-        ${kpi(fmtMin(stats.minutos_foco), 'Foco hoy', `Racha: ${stats.racha_dias} día(s)`, 'azul')}
-      </div>
+      ${resumen}
     </div>
 
     <div class="hoy-medio">
       ${bloqueRana}
-      <div class="tarjeta captura">
-        <form id="f-rapida" class="rapida">
-          <input name="titulo" placeholder="Nuevo pendiente + Enter…" autocomplete="off">
+      <form id="f-rapida" class="tarjeta captura">
+        <input name="titulo" placeholder="＋ Anota un pendiente y presiona Enter" autocomplete="off">
+        <div class="captura-opciones">
           ${selectorCategoria(st.ultimaCategoria || 'General')}
-          <select name="prioridad">${Object.keys(PRIORIDADES).map((p) => `<option ${p === 'B' ? 'selected' : ''}>${p}</option>`).join('')}</select>
-          <button class="primario">Agregar</button>
-        </form>
-      </div>
+          <select name="prioridad" title="Prioridad">${Object.keys(PRIORIDADES).map((p) => `<option ${p === 'B' ? 'selected' : ''}>${p}</option>`).join('')}</select>
+          <button class="secundario">Agregar</button>
+        </div>
+      </form>
     </div>
 
     <div class="hoy-paneles">
-      ${panel('En curso', enCurso, 'Nada en curso. Empieza por tu rana.')}
-      ${panel('Vencidas y por vencer (24 h)', [...vencidas, ...pronto], '<span class="grande">✨</span>Nada vencido ni por vencer.')}
-      ${panel('Otras tareas A', prioA, 'No hay más tareas A pendientes.')}
+      ${panel('En curso', sinRana(enCurso), rana && rana.estado === 'en_progreso' ? '🐸 Tu rana está en marcha.<br>Una cosa a la vez.' : 'Nada en curso.<br>Empieza por tu rana.', 'curso')}
+      ${panel('Vencidas y por vencer', sinRana([...vencidas, ...pronto]), '✨ Todo al día.', 'urgente')}
+      ${panel('Otras tareas A', prioA, 'No hay más tareas A.', 'a')}
     </div>
   </div>`;
+}
+
+const ICO_PLAY = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M4 2.5v11l9-5.5z"/></svg>';
+const ICO_PAUSA = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M3.5 2h3v12h-3zM9.5 2h3v12h-3z"/></svg>';
+const ICO_OK = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M3 8.5l3.2 3L13 4.5"/></svg>';
+
+/** Fecha corta y amable: «hoy 17:00», «mañana 9:30», «mié 12 nov». */
+function cuandoCorto(iso) {
+  if (!iso) return '';
+  const d = new Date(iso.length === 10 ? iso + 'T23:59:00' : iso);
+  const hoyD = new Date(); hoyD.setHours(0, 0, 0, 0);
+  const dia = new Date(d); dia.setHours(0, 0, 0, 0);
+  const n = Math.round((dia - hoyD) / 86400000);
+  const hora = iso.length > 10 ? ` ${d.getHours()}:${pad(d.getMinutes())}` : '';
+  if (n === 0) return `hoy${hora}`;
+  if (n === 1) return `mañana${hora}`;
+  if (n === -1) return `ayer${hora}`;
+  return d.toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric', month: 'short' }).replace(/\./g, '');
+}
+
+/** Fila simple para los paneles de Hoy: prioridad, título, un dato clave y una acción discreta. */
+function filaHoy(t, tipo) {
+  let dato = '', claseDato = '';
+  if (t.subtarea_en_curso) { dato = `▶ ${esc(t.subtarea_en_curso.titulo)}`; claseDato = 'txt-acento'; }
+  else if (t.estado === 'en_progreso') { dato = `▶ en marcha${t.tiempo_real_min >= 1 ? ` · ${fmtMin(t.tiempo_real_min)}` : ''}`; claseDato = 'txt-acento'; }
+  else if (t.vencida) { dato = `Vencida hace ${fmtDias(t.dias_atraso)}`; claseDato = 'txt-rojo'; }
+  else if (t.horas_restantes != null && t.horas_restantes <= 24) { dato = `Vence ${t.horas_restantes < 1 ? `en ${Math.max(1, Math.round(t.horas_restantes * 60))} min` : cuandoCorto(t.fecha_limite)}`; claseDato = 'txt-ambar'; }
+  else if (t.bloqueada) dato = '🔒 en espera';
+  else if (t.estado === 'pausada') dato = t.tiempo_real_min ? `Pausada · ${fmtMin(t.tiempo_real_min)}` : 'Pausada';
+  else if (t.fecha_limite) dato = `Vence ${cuandoCorto(t.fecha_limite)}`;
+  const avance = t.subtareas_total ? `<span class="fila-avance">${t.subtareas_hechas}/${t.subtareas_total}</span>` : '';
+
+  const sig = t.tiempo_por_subtareas ? siguienteSubtarea(t) : null;
+  let accion;
+  if (t.subtarea_en_curso) accion = `<button class="fila-btn activo" data-sub-accion="pausar" data-sub="${t.subtarea_en_curso.id}" data-tarea="${t.id}" title="Pausar">${ICO_PAUSA}</button>`;
+  else if (t.estado === 'en_progreso') accion = `<button class="fila-btn activo" data-accion="pausar" data-id="${t.id}" title="Pausar">${ICO_PAUSA}</button>`;
+  else if (sig) accion = `<button class="fila-btn" data-sub-accion="iniciar" data-sub="${sig.id}" data-tarea="${t.id}" title="Iniciar «${esc(sig.titulo)}»">${ICO_PLAY}</button>`;
+  else accion = `<button class="fila-btn" data-accion="iniciar" data-id="${t.id}" title="${t.estado === 'pausada' ? 'Reanudar' : 'Iniciar'}">${ICO_PLAY}</button>`;
+
+  return `<li class="fila-hoy ${tipo === 'urgente' && t.vencida ? 'urgente' : ''}">
+    <span class="punto-prio prio-${t.prioridad}" title="Prioridad ${t.prioridad}"></span>
+    <a href="#" class="fila-txt" data-detalle="${t.id}">
+      <span class="fila-titulo">${t.es_rana ? '🐸 ' : ''}${esc(t.titulo)}</span>
+      ${dato || avance ? `<span class="fila-dato ${claseDato}">${dato}${dato && avance ? ' · ' : ''}${avance}</span>` : ''}
+    </a>
+    <span class="fila-acciones">${accion}<button class="fila-btn ok" data-accion="completar" data-id="${t.id}" title="Completar">${ICO_OK}</button></span>
+  </li>`;
 }
 
 function filtrarTareas() {
@@ -1236,10 +1312,10 @@ document.addEventListener('click', async (e) => {
     }
     if (d.otraFrase !== undefined) {
       const fr = await api('/api/frase?aleatoria=1');
-      const caja = el.closest('.frase');
-      caja.querySelector('.etiqueta').textContent = `Frase · ${fr.principio}`;
-      caja.querySelector('blockquote').textContent = fr.texto;
-      caja.querySelector('.practica').textContent = `💡 ${fr.practica}`;
+      const caja = el.closest('.frase-suave');
+      caja.querySelector('p').textContent = fr.texto;
+      caja.querySelector('small').textContent = `${fr.principio} · 💡 ${fr.practica}`;
+      caja.title = `${fr.principio} — ${fr.practica}`;
       return;
     }
     if (d.nuevaMeta !== undefined) return formMeta();
@@ -1492,6 +1568,19 @@ document.addEventListener('keydown', (e) => {
 $('#btn-nueva').addEventListener('click', () => formTarea());
 $('#btn-catalogos').addEventListener('click', () => gestionarCatalogos());
 $('#btn-reporte').addEventListener('click', () => abrirReporte());
+
+/* Menú de herramientas plegable (engrane). Se recuerda abierto/cerrado en este navegador. */
+function ponerHerramientas(abierto, animar = true) {
+  const caja = $('#herramientas');
+  caja.classList.toggle('sin-animacion', !animar);
+  caja.classList.toggle('abierto', abierto);
+  $('#btn-herramientas').setAttribute('aria-expanded', String(abierto));
+  try { localStorage.setItem('mifoco-herramientas', abierto ? '1' : '0'); } catch { /* sin almacenamiento */ }
+}
+$('#btn-herramientas').addEventListener('click', () => ponerHerramientas(!$('#herramientas').classList.contains('abierto')));
+// Al usar una opción, el menú se recoge solo.
+$('#herr-panel').addEventListener('click', (e) => { if (e.target.closest('.enlace')) setTimeout(() => ponerHerramientas(false), 150); });
+try { ponerHerramientas(localStorage.getItem('mifoco-herramientas') === '1', false); } catch { ponerHerramientas(false, false); }
 $('#btn-respaldo').addEventListener('click', async () => {
   try { const r = await api('/api/respaldo', { method: 'POST' }); toast(`Respaldo creado: ${r.archivo}`, 'exito'); }
   catch (err) { toast(err.message, 'error'); }
@@ -1515,9 +1604,12 @@ async function revisarAlertas() {
   b.textContent = n;
   b.classList.toggle('oculto', n === 0);
   pintarPanelAlertas();
+  const primera = !st.alertasRevisadas;
+  st.alertasRevisadas = true;
   for (const a of st.alertas) {
     if (st.notificadas.has(a.clave)) continue;
     st.notificadas.add(a.clave);
+    if (primera) continue;  // al abrir: sin avisos emergentes; quedan en la campana 🔔
     if (a.nivel === 'info' && !a.clave.startsWith('descanso')) continue;
     if ('Notification' in window && Notification.permission === 'granted') {
       const noti = new Notification(`Mi Foco · ${a.titulo}`, { body: a.mensaje, tag: a.clave });
@@ -1533,7 +1625,7 @@ $('#btn-alertas').addEventListener('click', (e) => { e.stopPropagation(); $('#pa
 function pintarBotonNotif() {
   const b = $('#btn-notif');
   if (!('Notification' in window)) { b.classList.add('oculto'); return; }
-  b.textContent = Notification.permission === 'granted' ? '🔔 Notificaciones activas' : '🔔 Activar notificaciones';
+  b.innerHTML = `<i>🔔</i>${Notification.permission === 'granted' ? 'Notificaciones activas' : 'Activar notificaciones'}`;
 }
 $('#btn-notif').addEventListener('click', async () => {
   if (!('Notification' in window)) return;

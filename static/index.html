@@ -18,12 +18,25 @@
       <button data-vista="historial"><span>⟲</span>Historial</button>
     </nav>
     <div class="sidebar-pie">
-      <button id="btn-reporte" class="enlace">📤 Reporte de cumplimiento</button>
-      <button id="btn-catalogos" class="enlace">🏷 Categorías y descripciones</button>
-      <button id="btn-notif" class="enlace">🔔 Activar notificaciones</button>
-      <a class="enlace" href="/api/exportar/tareas.csv">⬇ Exportar tareas (CSV)</a>
-      <a class="enlace" href="/api/exportar/eventos.csv">⬇ Exportar historial (CSV)</a>
-      <button id="btn-respaldo" class="enlace">💾 Respaldar base de datos</button>
+      <div class="herramientas" id="herramientas">
+        <div class="herr-panel" id="herr-panel">
+          <div class="herr-items">
+            <span class="herr-grupo">Reportes</span>
+            <button id="btn-reporte" class="enlace"><i>📤</i>Reporte de cumplimiento</button>
+            <a class="enlace" href="/api/exportar/tareas.csv"><i>⬇</i>Exportar tareas (CSV)</a>
+            <a class="enlace" href="/api/exportar/eventos.csv"><i>⬇</i>Exportar historial (CSV)</a>
+            <span class="herr-grupo">Configuración</span>
+            <button id="btn-catalogos" class="enlace"><i>🏷</i>Categorías y descripciones</button>
+            <button id="btn-notif" class="enlace"><i>🔔</i>Activar notificaciones</button>
+            <button id="btn-respaldo" class="enlace"><i>💾</i>Respaldar base de datos</button>
+          </div>
+        </div>
+        <button id="btn-herramientas" class="herr-toggle" aria-expanded="false" aria-controls="herr-panel">
+          <svg class="engrane" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.07 7.07 0 0 0 .05-.94 7.07 7.07 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.88 2h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.63.94l-2.39-.96a.5.5 0 0 0-.61.22L2.64 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.4 7.4 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.31.61.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.04.24.25.42.49.42h3.84c.24 0 .45-.18.49-.42l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.22.09.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"/></svg>
+          <span>Herramientas</span>
+          <span class="flecha" aria-hidden="true">▴</span>
+        </button>
+      </div>
     </div>
   </aside>
 
