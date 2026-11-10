@@ -706,3 +706,21 @@ html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
 .timeline li.ev-novedad_resuelta::before { border-color: var(--exito); }
 .dia-sec li.nov-abierta > span { color: var(--peligro); font-weight: 500; }
 .dia-sec li.nov-resuelta > span { color: var(--exito); }
+
+/* ───────── Al pausar: ¿qué hiciste? ───────── */
+.modal.opaco { background: rgba(8, 10, 22, .68); backdrop-filter: blur(4px); }
+.modal.opaco .modal-caja { width: min(560px, 100%); animation: subir .22s cubic-bezier(.2,.8,.2,1); }
+@keyframes subir { from { transform: translateY(14px) scale(.98); opacity: 0; } }
+.nota-cab { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.nota-ico { width: 42px; height: 42px; border-radius: 12px; background: var(--acento-suave); color: var(--acento); display: grid; place-items: center; flex: none; }
+.nota-ico svg { width: 16px; height: 16px; }
+.nota-tit { flex: 1; min-width: 0; }
+.nota-tit h2 { margin: 0 0 2px !important; font-size: 1.15rem !important; }
+.nota-tit p { margin: 0; font-size: .88rem; color: var(--texto); overflow: hidden; text-overflow: ellipsis; }
+.nota-dur { display: flex; flex-direction: column; align-items: flex-end; flex: none; }
+.nota-dur b { font-size: 1.25rem; color: var(--acento); letter-spacing: -.02em; }
+.nota-dur span { font-size: .76rem; color: var(--sutil); }
+#f-nota-sesion textarea { resize: vertical; font-size: .95rem; }
+.timeline li.ev-trabajo::before { border-color: var(--acento); background: var(--acento-suave); }
+.nota-dia { flex-basis: 100%; padding: 3px 0 3px 27px; font-size: .84rem; color: var(--texto); }
+.nota-hora { display: inline-block; font-size: .72rem; color: var(--sutil); margin-right: 8px; font-variant-numeric: tabular-nums; }

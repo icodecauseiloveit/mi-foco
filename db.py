@@ -216,6 +216,7 @@ def init_db():
         _agregar_columnas(conn, "subtareas", {"es_entregable": "INTEGER DEFAULT 0"})
         _agregar_columnas(conn, "tareas", {"duplicada_de": "INTEGER"})  # id de la tarea original
         _agregar_columnas(conn, "sesiones", {"subtarea_id": "INTEGER"})  # sesión cronometrada en una subtarea
+        _agregar_columnas(conn, "sesiones", {"nota": "TEXT"})  # qué se hizo en esa sesión (opcional, al pausar)
         # Novedad: algo impide terminar la tarea o subtarea (se conserva el tiempo dedicado)
         _agregar_columnas(conn, "tareas", {"novedad": "TEXT", "novedad_en": "TEXT"})
         _agregar_columnas(conn, "subtareas", {"novedad": "TEXT", "novedad_en": "TEXT"})

@@ -16,7 +16,7 @@ const PRIORIDADES = {
 const EVENTOS = {
   creada: 'Creada', editada: 'Editada', reprogramada: 'Reprogramada', iniciada: 'Iniciada', reanudada: 'Reanudada',
   pausada: 'Pausada', completada: 'Completada', reabierta: 'Reabierta', cancelada: 'Cancelada', vencida: 'Venció', eliminada: 'Eliminada',
-  adjunto: 'Soporte 📎', novedad: 'Novedad ●', novedad_resuelta: 'Novedad resuelta', dependencias: 'Dependencias', desbloqueada: 'Desbloqueada 🔓', bloqueada: 'Bloqueada 🔒',
+  adjunto: 'Soporte 📎', trabajo: 'Trabajo realizado 📝', novedad: 'Novedad ●', novedad_resuelta: 'Novedad resuelta', dependencias: 'Dependencias', desbloqueada: 'Desbloqueada 🔓', bloqueada: 'Bloqueada 🔒',
   subtarea_completada: 'Subtarea completada', subtarea_reabierta: 'Subtarea desmarcada', subtareas: 'Subtareas modificadas',
 };
 const ABIERTOS = ['pendiente', 'en_progreso', 'pausada'];
@@ -841,7 +841,8 @@ function tarjetaDia(d) {
     seccion('☑ Subtareas completadas', d.subtareas.map((s) => `<li>${s.es_entregable ? '📦 ' : ''}${esc(s.titulo)}
       <small>de ${enlaceTarea(s.tarea)} · ${esc(s.hora)}</small></li>`)),
     seccion('⏱ Tiempo trabajado', d.trabajadas.map((t) => `<li>${enlaceTarea(t)} <span class="chip">${fmtMin(t.minutos)}</span>
-      ${t.por_subtarea && t.por_subtarea.length ? `<small class="desglose-sub">${t.por_subtarea.map((x) => `${esc(x.titulo)} ${fmtMin(x.minutos)}`).join(' · ')}</small>` : ''}</li>`)),
+      ${t.por_subtarea && t.por_subtarea.length ? `<small class="desglose-sub">${t.por_subtarea.map((x) => `${esc(x.titulo)} ${fmtMin(x.minutos)}`).join(' · ')}</small>` : ''}
+      ${(t.notas || []).map((n) => `<div class="nota-dia"><span class="nota-hora">${esc(n.hora)}–${esc(n.fin)} · ${fmtMin(n.minutos)}${n.subtarea ? ` · ${esc(n.subtarea)}` : ''}</span>📝 ${esc(n.nota)}</div>`).join('')}</li>`)),
     seccion('💬 Comentarios', d.comentarios.map((c) => `<li><span class="coment-dia">${esc(c.texto)}</span>
       <small>en ${enlaceTarea(c.tarea)} · ${esc(c.hora)}</small></li>`)),
     seccion('● Novedades', d.novedades.map((n) => `<li class="${n.resuelta ? 'nov-resuelta' : 'nov-abierta'}">
@@ -933,12 +934,12 @@ function abrirModal(html, { enfocar = true } = {}) {
   const caja = $('#modal-caja');
   caja.innerHTML = html;
   delete caja.dataset.detalleAbierto;
-  $('#modal').classList.remove('oculto');
+  $('#modal').classList.remove('oculto', 'opaco');
   caja.scrollTop = 0;
   const f = enfocar && $('#modal-caja input:not([type=checkbox]):not([type=hidden]), #modal-caja textarea');
   if (f) f.focus({ preventScroll: true });
 }
-function cerrarModal() { $('#modal').classList.add('oculto'); $('#modal-caja').innerHTML = ''; $('#modal-caja').classList.remove('modal-ancho'); }
+function cerrarModal() { $('#modal').classList.add('oculto'); $('#modal').classList.remove('opaco'); $('#modal-caja').innerHTML = ''; $('#modal-caja').classList.remove('modal-ancho'); }
 
 function selectorCategoria(actual = 'General', nombre = 'categoria') {
   const lista = categorias();
@@ -1280,13 +1281,41 @@ document.addEventListener('keydown', (e) => {
   if (marca && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); clicSubtarea(marca); }
 });
 
+/* ─────────── al pausar: ¿qué hiciste en ese tiempo? (opcional) ─────────── */
+function pedirNotaSesion(t, ses, volverA = null) {
+  const hora = (iso) => (iso || '').slice(11, 16);
+  abrirModal(`<div class="nota-sesion">
+    <div class="nota-cab">
+      <span class="nota-ico">${ICO_PAUSA}</span>
+      <div class="nota-tit"><h2>Tiempo pausado</h2>
+        <p>«${esc(t.titulo)}»${ses.subtarea ? ` <span class="sutil">›</span> «${esc(ses.subtarea)}»` : ''}</p></div>
+      <div class="nota-dur"><b>${fmtMin(ses.minutos)}</b><span>${hora(ses.inicio)} – ${hora(ses.fin)}</span></div>
+    </div>
+    <form id="f-nota-sesion" data-sesion="${ses.id}" data-volver="${volverA || ''}">
+      <label>¿Qué hiciste en este tiempo? <span class="ayuda">Opcional. Queda en el reporte semanal y en el historial de la tarea.</span>
+        <textarea name="nota" rows="4" maxlength="2000" placeholder="Ej. Descargué el corte del lunes y validé las fechas de U108 y U109"></textarea></label>
+      <div class="botones">
+        <span class="ayuda" style="margin-right:auto">Ctrl + Enter guarda · Esc omite</span>
+        <button type="button" class="secundario" data-omitir-nota>Omitir</button>
+        <button class="primario">Guardar</button>
+      </div>
+    </form>
+  </div>`);
+  $('#modal').classList.add('opaco');
+}
+
 /* ─────────── acciones ─────────── */
 async function accionSubtarea(sid, tid, accion) {
   try {
     const t = await api(`/api/subtareas/${sid}/accion`, { method: 'POST', body: { accion } });
     const sub = t.subtareas.find((x) => x.id === sid);
+    const enDetalle = !$('#modal').classList.contains('oculto') && $('#modal-caja').dataset.detalleAbierto === String(tid);
+    if (accion === 'pausar' && t.sesion_cerrada) {
+      await refrescar();
+      return pedirNotaSesion(t, t.sesion_cerrada, enDetalle ? tid : null);
+    }
     toast(accion === 'iniciar' ? `▶ En marcha: «${sub.titulo}»` : `⏸ Pausada «${sub.titulo}» · lleva ${fmtMin(sub.tiempo_min)} · tarea ${fmtMin(t.tiempo_real_min)}`);
-    if (!$('#modal').classList.contains('oculto') && $('#modal-caja').dataset.detalleAbierto === String(tid)) await verDetalle(tid);
+    if (enDetalle) await verDetalle(tid);
     await refrescar();
   } catch (err) { toast(err.message, 'error'); }
 }
@@ -1334,8 +1363,14 @@ async function accionTarea(id, accion) {
       novedad: '● Novedad registrada. La tarea queda abierta y su tiempo guardado.',
       quitar_novedad: '✓ Novedad resuelta.',
     };
+    const enDetalle = !$('#modal').classList.contains('oculto') && $('#modal-caja').dataset.detalleAbierto === String(id);
+    if (accion === 'pausar' && r.sesion_cerrada) {
+      if (st.vista === 'metas') await cargarTareas();
+      await refrescar();
+      return pedirNotaSesion(r, r.sesion_cerrada, enDetalle ? id : null);
+    }
     toast(msgs[accion], accion === 'completar' ? 'exito' : '');
-    if (!$('#modal').classList.contains('oculto') && $('#modal-caja').dataset.detalleAbierto === String(id)) await verDetalle(id);
+    if (enDetalle) await verDetalle(id);
     if (st.vista === 'metas') await cargarTareas();
     await refrescar();
   } catch (e) { toast(e.message, 'error'); }
@@ -1400,6 +1435,14 @@ document.addEventListener('submit', async (e) => {
       await render();
       const otra = enModal ? $('#modal-caja .f-subtarea input') : $(`#vista .f-subtarea[data-tarea="${t.id}"] input`);
       if (otra) otra.focus();
+    } else if (f.id === 'f-nota-sesion') {
+      const nota = f.nota.value.trim();
+      if (nota) {
+        await api(`/api/sesiones/${f.dataset.sesion}`, { method: 'PUT', body: { nota } });
+        toast('📝 Guardado: quedará en el reporte semanal', 'exito');
+      }
+      if (f.dataset.volver) await verDetalle(Number(f.dataset.volver)); else cerrarModal();
+      if (nota) render();
     } else if (f.id === 'f-enlace') {
       if (!f.url.value.trim()) return;
       await api(`/api/tareas/${f.dataset.tarea}/adjuntos`, { method: 'POST', body: { url: f.url.value, nombre: f.nombre.value } });
@@ -1500,6 +1543,10 @@ document.addEventListener('click', async (e) => {
     }
     if (d.borrarHito) { await api(`/api/hitos/${d.borrarHito}`, { method: 'DELETE' }); return render(); }
     if (d.tabCatalogo) return gestionarCatalogos(d.tabCatalogo);
+    if (d.omitirNota !== undefined) {
+      const volver = el.closest('form').dataset.volver;
+      return volver ? verDetalle(Number(volver)) : cerrarModal();
+    }
     if (d.editarNovedadSub) {
       const txt = prompt('Editar la novedad:', d.texto || '');
       if (txt === null) return;
@@ -1672,6 +1719,11 @@ document.addEventListener('input', (e) => {
 
 $('#modal').addEventListener('mousedown', (e) => { if (e.target.id === 'modal') cerrarModal(); });
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.closest && e.target.closest('#f-nota-sesion')) {
+    e.preventDefault();
+    e.target.closest('form').requestSubmit();
+    return;
+  }
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.closest && e.target.closest('.f-comentario')) {
     e.preventDefault();
     e.target.closest('form').requestSubmit();

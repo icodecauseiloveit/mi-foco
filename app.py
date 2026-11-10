@@ -790,6 +790,7 @@ def api_accion_tarea(tid):
     d = body()
     accion = d.get("accion")
     ahora = db.ahora()
+    sesion_cerrada = None
     with db.conexion() as conn:
         t = fila_tarea(conn, tid)
         est = t["estado"]
@@ -826,6 +827,7 @@ def api_accion_tarea(tid):
             conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, tid))
             registrar_evento(conn, tid, "pausada", est, "pausada",
                              (f"Subtarea «{sub['titulo']}» · " if sub else "") + f"sesión de {mins:.0f} min")
+            sesion_cerrada = sesion_recien_cerrada(conn, tid, ahora)
 
         elif accion == "completar":
             if est not in ABIERTOS:
@@ -900,6 +902,7 @@ def api_accion_tarea(tid):
         verbo = {"completar": "se completó", "cancelar": "se canceló", "reabrir": "se reabrió"}.get(accion, "cambió")
         res = obtener_tarea(conn, tid)
         res["desbloqueadas"] = registrar_cambios_bloqueo(conn, antes, f"{verbo} «{t['titulo']}»")
+        res["sesion_cerrada"] = sesion_cerrada
         return jsonify(res)
 
 
@@ -1149,6 +1152,14 @@ def cerrar_sesion_subtarea(conn, sid, momento):
     return total
 
 
+def sesion_recien_cerrada(conn, tid, momento):
+    """La sesión que se acaba de cerrar al pausar (para pedir qué se hizo en ella)."""
+    r = conn.execute("SELECT s.id, s.inicio, s.fin, s.minutos, st.titulo AS subtarea FROM sesiones s "
+                     "LEFT JOIN subtareas st ON st.id = s.subtarea_id WHERE s.tarea_id=? AND s.fin=? "
+                     "ORDER BY s.id DESC LIMIT 1", (tid, momento)).fetchone()
+    return dict(r) if r else None
+
+
 def texto_novedad(valor):
     texto = (valor or "").strip()
     if len(texto) > 500:
@@ -1186,15 +1197,38 @@ def api_accion_subtarea(sid):
                 detalle += f" · antes «{previo['titulo']}» ({mins_prev:.0f} min)"
             registrar_evento(conn, tid, tipo if t["estado"] != "en_progreso" else "iniciada", t["estado"], "en_progreso", detalle)
         elif accion == "pausar":
-            mins = cerrar_sesion_subtarea(conn, sid, ahora)
-            if not mins and s["id"] not in tiempos_por_subtarea(conn, tid)[1]:
+            if not conn.execute("SELECT 1 FROM sesiones WHERE subtarea_id=? AND fin IS NULL", (sid,)).fetchone():
                 raise ValueError("La subtarea no está en curso.")
+            mins = cerrar_sesion_subtarea(conn, sid, ahora)
             if not conn.execute("SELECT 1 FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchone():
                 conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, tid))
             registrar_evento(conn, tid, "pausada", "en_progreso", "pausada", f"Subtarea «{s['titulo']}» · sesión de {mins:.0f} min")
+            res = obtener_tarea(conn, tid)
+            res["sesion_cerrada"] = sesion_recien_cerrada(conn, tid, ahora)
+            return jsonify(res)
         else:
             raise ValueError("Acción no válida.")
         return jsonify(obtener_tarea(conn, tid))
+
+
+@app.put("/api/sesiones/<int:ses_id>")
+def api_nota_sesion(ses_id):
+    """Guarda qué se hizo en una sesión de trabajo: {"nota": "texto"} (vacío la borra)."""
+    nota = (body().get("nota") or "").strip()
+    if len(nota) > 2000:
+        raise ValueError("La descripción es muy larga (máx. 2000 caracteres).")
+    with db.conexion() as conn:
+        r = conn.execute("SELECT s.*, st.titulo AS subtarea FROM sesiones s JOIN tareas t ON t.id=s.tarea_id "
+                         "LEFT JOIN subtareas st ON st.id=s.subtarea_id WHERE s.id=? AND t.eliminada=0", (ses_id,)).fetchone()
+        if not r:
+            abort(404, "Sesión no encontrada.")
+        if (r["nota"] or "") != nota:
+            conn.execute("UPDATE sesiones SET nota=? WHERE id=?", (nota or None, ses_id))
+            if nota:
+                donde = f"«{r['subtarea']}» · " if r["subtarea"] else ""
+                registrar_evento(conn, r["tarea_id"], "trabajo", None, None,
+                                 f"📝 {donde}{(r['minutos'] or 0):.0f} min ({(r['inicio'] or '')[11:16]}–{(r['fin'] or '')[11:16]}): {nota}")
+        return jsonify(dict(conn.execute("SELECT * FROM sesiones WHERE id=?", (ses_id,)).fetchone()))
 
 
 @app.delete("/api/subtareas/<int:sid>")
@@ -1836,7 +1870,7 @@ def api_semana():
             "FROM subtareas s JOIN tareas t ON t.id=s.tarea_id "
             "WHERE t.eliminada=0 AND s.completada=1 AND s.completada_en >= ? AND s.completada_en < ?", rango).fetchall()
         sesiones = conn.execute(
-            "SELECT s.tarea_id, s.inicio, s.fin, s.minutos, st.titulo AS sub_titulo FROM sesiones s "
+            "SELECT s.tarea_id, s.inicio, s.fin, s.minutos, s.nota, st.titulo AS sub_titulo FROM sesiones s "
             "JOIN tareas t ON t.id=s.tarea_id LEFT JOIN subtareas st ON st.id=s.subtarea_id "
             "WHERE t.eliminada=0 AND s.inicio >= ? AND s.inicio < ?", rango).fetchall()
         comentarios = conn.execute(
@@ -1874,8 +1908,11 @@ def api_semana():
         t = tareas.get(s["tarea_id"])
         if t:
             dia = por_dia[ini.date().isoformat()]["trabajadas"]
-            fila = dia.setdefault(t["id"], {**breve(t), "minutos": 0, "por_subtarea": {}})
+            fila = dia.setdefault(t["id"], {**breve(t), "minutos": 0, "por_subtarea": {}, "notas": []})
             fila["minutos"] += m
+            if s["nota"]:
+                fila["notas"].append({"hora": s["inicio"][11:16], "fin": (s["fin"] or "")[11:16], "minutos": round(m),
+                                      "subtarea": s["sub_titulo"], "nota": s["nota"]})
             if s["sub_titulo"]:
                 fila["por_subtarea"][s["sub_titulo"]] = fila["por_subtarea"].get(s["sub_titulo"], 0) + m
     for c in comentarios:
