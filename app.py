@@ -2127,29 +2127,26 @@ def api_ia_resumen_semanal():
             dias.append(item)
     if not dias:
         raise ValueError("Esa semana no tiene actividad registrada para resumir.")
-    proximas = []
-    if s["es_actual"]:
-        tope = datetime.fromisoformat(s["hasta"]) + timedelta(days=8)
-        with db.conexion() as conn:
-            marcar_vencidas(conn)
-            for t in listar_tareas(conn):
-                lim = limite_dt(t["fecha_limite"])
-                if t["vencida"] or (lim and lim < tope):
-                    proximas.append(_limpio({"titulo": t["titulo"], "prioridad": t["prioridad"], "fecha_limite": t["fecha_limite"],
-                                             "vencida": t["vencida"], "avance_pct": t["progreso_pct"]}))
     sistema = ESTILO_IA + """
-Redacta el resumen semanal de trabajo, listo para pegar en un correo o enviarlo a quien hace seguimiento.
-Texto plano, sin Markdown (nada de asteriscos ni #):
-- Primera línea: «Resumen semana N (fechas)».
-- Un párrafo corto (2-3 frases) con lo principal de la semana.
-- «Logros:» viñetas «• » con lo completado, agrupando lo relacionado.
-- «En curso:» lo trabajado que no se terminó, apoyándote en lo que se hizo en cada sesión.
-- «Novedades:» solo si hay novedades abiertas: qué bloquea y qué se necesita.
-- «Próxima semana:» solo si hay pendientes próximos.
-Omite las secciones vacías. Expresa el tiempo en horas solo cuando aporte."""
+Redacta el reporte de lo que se hizo en la semana, para enviarlo a quien hace seguimiento.
+Estilo: prosa breve y fluida, en tercera persona impersonal y en pasado («Se avanzó en…», «quedaron configurados…»,
+«se revisó…»). Nada de títulos, secciones, viñetas, Markdown ni saludos.
+- Un párrafo corto por frente de trabajo (tarea o grupo de tareas relacionadas); normalmente uno a tres párrafos en total.
+- Cuenta qué se hizo con los detalles concretos que aparecen en las notas, subtareas y comentarios (unidades, nombres de
+  documentos, versiones, fechas). Une lo relacionado en una misma frase en vez de enumerarlo.
+- Si hay novedades o pendientes, dilo dentro del mismo párrafo: qué falta y qué se necesita para cerrarlo
+  (p. ej. «Esta subtarea queda abierta hasta que se cargue el documento actualizado.»).
+- No menciones minutos, horas, porcentajes ni días de la semana, salvo que sean parte del contenido.
+- No agregues conclusiones, valoraciones ni próximos pasos que no estén en los datos.
+
+Ejemplo del tono y la extensión esperados:
+Se avanzó en la configuración del Setup STO Event: en la U108 quedaron configurados el nombre del evento y las fechas
+de ejecución y finalización, y en la U109 el nombre del evento. En la conformidad de carpetas de la parada PHD U108 se
+revisó la estructura en SharePoint y aparecieron tres pendientes. Las carpetas “0 Comunicaciones y memorandos” y
+“0 Financiero” están vacías, y “00 Seguimiento plan de hitos” no tiene la versión vigente del plan, que es la 8, porque
+solo llega hasta la versión 6. Esta subtarea queda abierta hasta que se cargue el documento actualizado."""
     usuario = (f"Semana {s['semana']} de {s['anio']} (lunes {s['desde']} a domingo {s['hasta']}).\n"
-               f"Totales: {_json(s['resumen'])}\nActividad por día: {_json(dias)}"
-               + (f"\nPendientes próximos o vencidos: {_json(proximas[:15])}" if proximas else ""))
+               f"Actividad por día: {_json(dias)}")
     return jsonify(texto=ia.chat(sistema, usuario))
 
 
