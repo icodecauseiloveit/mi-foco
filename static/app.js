@@ -218,7 +218,11 @@ function etiquetaLimite(t) {
 
 const recorte = (txt, n) => (txt.length > n ? txt.slice(0, n - 1) + '…' : txt);
 /** Subtarea corriendo o, si no hay, la primera pendiente. */
-const siguienteSubtarea = (t) => (t.subtareas || []).find((s) => s.sesion_abierta) || (t.subtareas || []).find((s) => !s.completada);
+// La que sigue: la que está corriendo o, si no, la primera pendiente SIN novedad (las que tienen novedad se saltan).
+const siguienteSubtarea = (t) => (t.subtareas || []).find((s) => s.sesion_abierta) || (t.subtareas || []).find((s) => !s.completada && !s.novedad);
+const corriendoTarea = (t) => !!t.subtarea_en_curso || t.estado === 'en_progreso';
+/** ¿Hay algo que hacer ya en esta tarea? No, si la tarea tiene novedad o todas sus subtareas pendientes la tienen. */
+const sePuedeTrabajar = (t) => corriendoTarea(t) || (!t.novedad && (!t.tiempo_por_subtareas || !!siguienteSubtarea(t)));
 
 /* Subtareas: abiertas por defecto en tareas abiertas, cerradas en las terminadas. */
 const subExpandida = (t) => (abierta(t) ? !st.subInvertidas.has(t.id) : st.subInvertidas.has(t.id));
@@ -360,6 +364,7 @@ function accionPrincipal(t, conTexto) {
     : `<button class="btn-redondo ${clase}" ${attrs} title="${esc(texto)}">${ico}</button>`;
   if (t.subtarea_en_curso) return b(`data-sub-accion="pausar" data-sub="${t.subtarea_en_curso.id}" data-tarea="${t.id}"`, ICO_PAUSA, `Pausar «${esc(recorte(t.subtarea_en_curso.titulo, 22))}»`, 'activo');
   if (t.estado === 'en_progreso') return b(`data-accion="pausar" data-id="${t.id}"`, ICO_PAUSA, 'Pausar', 'activo');
+  if (abierta(t) && !sePuedeTrabajar(t)) return b(`data-detalle="${t.id}"`, '●', 'Con novedad · ver', 'neutro con-novedad');
   if (sig) return b(`data-sub-accion="iniciar" data-sub="${sig.id}" data-tarea="${t.id}"`, ICO_PLAY, `Iniciar «${esc(recorte(sig.titulo, 22))}»`);
   if (['pendiente', 'pausada'].includes(t.estado)) return b(`data-accion="iniciar" data-id="${t.id}"`, ICO_PLAY, t.estado === 'pausada' ? 'Reanudar' : 'Iniciar');
   return b(`data-accion="reabrir" data-id="${t.id}"`, '↺', 'Reabrir', 'neutro');
@@ -493,7 +498,11 @@ async function vistaHoy() {
   const noEnCurso = (t) => !enCurso.includes(t);
   const vencidas = abiertas.filter((t) => t.vencida && noEnCurso(t)).sort(ordenPrioridad);
   const pronto = abiertas.filter((t) => !t.vencida && noEnCurso(t) && t.horas_restantes != null && t.horas_restantes <= 24).sort(ordenPrioridad);
-  const rana = abiertas.filter((t) => t.es_rana).sort(ordenPrioridad)[0] || abiertas.filter((t) => t.prioridad === 'A').sort(ordenPrioridad)[0];
+  const disponibles = abiertas.filter(sePuedeTrabajar);
+  const ranaMarcada = abiertas.filter((t) => t.es_rana).sort(ordenPrioridad)[0];
+  const rana = disponibles.filter((t) => t.es_rana).sort(ordenPrioridad)[0] || disponibles.filter((t) => t.prioridad === 'A').sort(ordenPrioridad)[0]
+    || (ranaMarcada ? [...disponibles].sort(ordenPrioridad)[0] : undefined);  // la rana tiene novedad: lo que sigue
+  const ranaConNovedad = ranaMarcada && rana !== ranaMarcada && !sePuedeTrabajar(ranaMarcada) ? ranaMarcada : null;
   const usadas = new Set([rana, ...vencidas, ...pronto, ...enCurso].filter(Boolean).map((t) => t.id));
   const prioA = abiertas.filter((t) => t.prioridad === 'A' && !usadas.has(t.id)).sort(ordenPrioridad);
   const sinRana = (lista) => lista.filter((t) => !rana || t.id !== rana.id);  // la rana ya está destacada arriba
@@ -504,6 +513,7 @@ async function vistaHoy() {
     const sig = rana.tiempo_por_subtareas ? siguienteSubtarea(rana) : null;
     const corriendo = rana.subtarea_en_curso || rana.estado === 'en_progreso';
     const detalle = [];
+    if (ranaConNovedad) detalle.push(`<span class="txt-rojo">● «${esc(recorte(ranaConNovedad.titulo, 40))}» tiene novedad: sigue con esta</span>`);
     if (rana.novedad) detalle.push(`<span class="txt-rojo">● Novedad: ${esc(recorte(rana.novedad, 60))}</span>`);
     if (rana.vencida) detalle.push(`<span class="txt-rojo">Vencida hace ${fmtDias(rana.dias_atraso)}</span>`);
     else if (rana.fecha_limite) detalle.push(`Vence ${fmtFecha(rana.fecha_limite)}`);
@@ -522,7 +532,7 @@ async function vistaHoy() {
     bloqueRana = `<section class="tarjeta rana-hero ${corriendo ? 'en-marcha' : ''}">
       <div class="rana-emoji">🐸</div>
       <div class="rana-cuerpo">
-        <span class="rana-etiqueta">${rana.es_rana ? 'Tu rana de hoy' : 'Lo más importante hoy'}</span>
+        <span class="rana-etiqueta">${rana.es_rana ? 'Tu rana de hoy' : ranaConNovedad ? 'Mientras tanto, lo que sigue' : 'Lo más importante hoy'}</span>
         <a href="#" class="rana-titulo" data-detalle="${rana.id}">${esc(rana.titulo)}</a>
         ${detalle.length ? `<div class="rana-detalle">${detalle.join(' · ')}</div>` : ''}
         ${rana.subtareas_total ? `<div class="progreso fino"><div style="width:${rana.progreso_pct}%"></div></div>` : ''}
@@ -533,8 +543,10 @@ async function vistaHoy() {
     bloqueRana = `<section class="tarjeta rana-hero vacia">
       <div class="rana-emoji">🐸</div>
       <div class="rana-cuerpo"><span class="rana-etiqueta">Tu rana de hoy</span>
-        <span class="rana-titulo apagado">Aún no eliges tu tarea más importante</span>
-        <div class="rana-detalle">Márcala como 🐸 al crearla o editarla y hazla primero.</div></div>
+        ${ranaMarcada ? `<a href="#" class="rana-titulo" data-detalle="${ranaMarcada.id}">${esc(ranaMarcada.titulo)}</a>
+        <div class="rana-detalle txt-rojo">● Tiene novedad y no hay otra tarea disponible: resuélvela para continuar.</div></div>`
+        : `<span class="rana-titulo apagado">Aún no eliges tu tarea más importante</span>
+        <div class="rana-detalle">Márcala como 🐸 al crearla o editarla y hazla primero.</div></div>`}
     </section>`;
   }
 
@@ -621,6 +633,7 @@ function filaHoy(t, tipo) {
   let accion;
   if (t.subtarea_en_curso) accion = `<button class="fila-btn activo" data-sub-accion="pausar" data-sub="${t.subtarea_en_curso.id}" data-tarea="${t.id}" title="Pausar">${ICO_PAUSA}</button>`;
   else if (t.estado === 'en_progreso') accion = `<button class="fila-btn activo" data-accion="pausar" data-id="${t.id}" title="Pausar">${ICO_PAUSA}</button>`;
+  else if (!sePuedeTrabajar(t)) accion = `<button class="fila-btn con-novedad" data-detalle="${t.id}" title="Con novedad: resuélvela para continuar (ver detalle)">●</button>`;
   else if (sig) accion = `<button class="fila-btn" data-sub-accion="iniciar" data-sub="${sig.id}" data-tarea="${t.id}" title="Iniciar «${esc(sig.titulo)}»">${ICO_PLAY}</button>`;
   else accion = `<button class="fila-btn" data-accion="iniciar" data-id="${t.id}" title="${t.estado === 'pausada' ? 'Reanudar' : 'Iniciar'}">${ICO_PLAY}</button>`;
 

@@ -772,3 +772,6 @@ html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
 @media (max-width: 640px) { .ia-caja { flex-direction: column; } .plan-dia li { flex-wrap: wrap; } }
 .plan-info a { color: var(--texto); font-weight: 600; text-decoration: none; margin-left: 6px; }
 .plan-info a:hover { color: var(--acento); text-decoration: underline; }
+
+/* Botón de una tarea que no se puede trabajar por una novedad: lleva al detalle */
+.btn-acc.con-novedad, .btn-redondo.con-novedad, .fila-btn.con-novedad { color: var(--peligro); }
