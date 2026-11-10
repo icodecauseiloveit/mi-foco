@@ -983,6 +983,7 @@ function selectorDescripcion() {
 }
 
 const filaSubtarea = (s = {}) => `<div class="sub-fila" data-sub-id="${s.id || ''}">
+    <span class="sub-arrastre" title="Arrastra para cambiar el orden (o Alt + ↑/↓ en el texto)" aria-hidden="true">⠿</span>
     <span class="sub-estado" title="${s.completada ? 'Completada' : 'Pendiente'}">${s.completada ? '✓' : '○'}</span>
     <input class="sub-input" value="${esc(s.titulo || '')}" placeholder="Ej. U108 — actualizar fecha de ejecución" maxlength="200" autocomplete="off">
     <button type="button" class="ico" data-quitar-sub title="Quitar">✕</button>
@@ -993,7 +994,7 @@ function editorSubtareas(subs) {
     <div class="sub-filas">${subs.map(filaSubtarea).join('')}</div>
     <button type="button" class="mini" data-agregar-sub>+ Agregar subtarea</button>
     ${st.ia.activa ? '<button type="button" class="ia-btn mini" data-ia-subtareas title="La IA propone los pasos a partir del título, la descripción y el entregable">✨ Sugerir pasos</button>' : ''}
-    <span class="ayuda">Enter agrega otra · puedes pegar una lista (una por línea)</span>
+    <span class="ayuda">Enter agrega otra · ⠿ arrastra para ordenar · puedes pegar una lista (una por línea)</span>
   </div>`;
 }
 
@@ -2105,6 +2106,47 @@ $('#btn-notif').addEventListener('click', async () => {
   await Notification.requestPermission();
   pintarBotonNotif();
   if (Notification.permission === 'granted') toast('Notificaciones activadas', 'exito');
+});
+
+/* ─────────── ordenar subtareas en el formulario: arrastrar con el mouse o Alt + ↑/↓ ─────────── */
+document.addEventListener('pointerdown', (e) => {
+  const asa = e.target.closest('.sub-arrastre');
+  if (!asa || e.button !== 0) return;
+  const fila = asa.closest('.sub-fila');
+  const cont = fila.parentElement;
+  e.preventDefault();
+  // Se escucha en todo el documento: mover la fila en el DOM suelta la captura del puntero.
+  fila.classList.add('arrastrando');
+  cont.classList.add('ordenando');
+  const mover = (ev) => {
+    if (ev.pointerId !== e.pointerId) return;
+    const y = ev.clientY;
+    const siguiente = [...cont.querySelectorAll('.sub-fila:not(.arrastrando)')]
+      .find((o) => { const r = o.getBoundingClientRect(); return y < r.top + r.height / 2; });
+    if (siguiente) { if (fila.nextElementSibling !== siguiente) cont.insertBefore(fila, siguiente); }
+    else if (cont.lastElementChild !== fila) cont.appendChild(fila);
+    const caja = $('#modal-caja').getBoundingClientRect();  // desplaza la ventana si llegas al borde
+    if (y < caja.top + 48) $('#modal-caja').scrollTop -= 14;
+    else if (y > caja.bottom - 48) $('#modal-caja').scrollTop += 14;
+  };
+  const soltar = () => {
+    fila.classList.remove('arrastrando');
+    cont.classList.remove('ordenando');
+    document.removeEventListener('pointermove', mover);
+    document.removeEventListener('pointerup', soltar);
+    document.removeEventListener('pointercancel', soltar);
+  };
+  document.addEventListener('pointermove', mover);
+  document.addEventListener('pointerup', soltar);
+  document.addEventListener('pointercancel', soltar);
+});
+document.addEventListener('keydown', (e) => {
+  if (!e.altKey || !['ArrowUp', 'ArrowDown'].includes(e.key) || !e.target.classList.contains('sub-input')) return;
+  e.preventDefault();
+  const fila = e.target.closest('.sub-fila');
+  if (e.key === 'ArrowUp' && fila.previousElementSibling) fila.previousElementSibling.before(fila);
+  if (e.key === 'ArrowDown' && fila.nextElementSibling) fila.nextElementSibling.after(fila);
+  e.target.focus();
 });
 
 /* ─────────── arranque ─────────── */

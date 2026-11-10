@@ -775,3 +775,12 @@ html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
 
 /* Botón de una tarea que no se puede trabajar por una novedad: lleva al detalle */
 .btn-acc.con-novedad, .btn-redondo.con-novedad, .fila-btn.con-novedad { color: var(--peligro); }
+
+/* Ordenar subtareas arrastrando */
+.sub-arrastre { cursor: grab; color: var(--sutil); flex: none; width: 16px; text-align: center; font-size: 1rem; line-height: 1;
+  user-select: none; touch-action: none; padding: 6px 0; border-radius: 4px; }
+.sub-arrastre:hover { color: var(--acento); background: var(--acento-suave); }
+.sub-filas.ordenando, .sub-filas.ordenando * { cursor: grabbing !important; }
+.sub-fila.arrastrando { position: relative; z-index: 2; background: var(--superficie); border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(15, 17, 30, .18); outline: 2px solid var(--acento); }
+.sub-fila.arrastrando .sub-arrastre { color: var(--acento); }
