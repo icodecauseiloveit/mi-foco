@@ -791,9 +791,16 @@ html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
 .sub-fila[data-nivel="3"] { margin-left: 52px; }
 .sub-fila[data-nivel="2"]::before, .sub-fila[data-nivel="3"]::before { content: ""; width: 10px; height: 14px; margin-left: -18px; margin-right: -4px; flex: none;
   border-left: 1.5px solid var(--borde); border-bottom: 1.5px solid var(--borde); border-bottom-left-radius: 6px; transform: translateY(-6px); }
-.sub-fila[data-nivel="3"] .sub-hija { visibility: hidden; }
-.sub-fila .sub-hija { color: var(--sutil); font-weight: 700; }
-.sub-fila .sub-hija:hover { color: var(--acento); }
+/* «+» al final de la barra: agrega una subtarea del siguiente nivel */
+.sub-campo { position: relative; flex: 1; min-width: 0; display: flex; }
+.sub-campo .sub-input { flex: 1; min-width: 0; padding-right: 40px; }
+.sub-mas { position: absolute; z-index: 2; right: 5px; top: 0; bottom: 0; margin: auto 0; width: 28px; height: 28px; padding: 0;
+  display: grid; place-items: center; border: 1px solid transparent; border-radius: 8px; background: transparent;
+  color: var(--sutil); font-size: 1.15rem; font-weight: 600; line-height: 1; cursor: pointer; }
+.sub-mas:hover, .sub-mas:focus-visible { color: var(--acento); background: var(--acento-suave); border-color: color-mix(in srgb, var(--acento) 30%, transparent); }
+.sub-fila[data-nivel="3"] .sub-mas { display: none; }
+.sub-mas:active { transform: scale(.92); }
+.sub-fila[data-nivel="3"] .sub-campo .sub-input { padding-right: 10px; }
 /* checklist en tarjetas y detalle */
 .subtareas li { padding-left: calc(var(--nivel, 0) * 24px); }
 .subtareas li.madre > .sub-marca .sub-titulo { font-weight: 600; }

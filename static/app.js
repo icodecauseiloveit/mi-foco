@@ -1003,8 +1003,10 @@ const MAX_NIVEL_SUB = 3;
 const filaSubtarea = (s = {}) => `<div class="sub-fila" data-sub-id="${s.id || ''}" data-nivel="${s.nivel || 1}">
     <span class="sub-arrastre" title="Arrastra para cambiar el orden con todo lo que tiene debajo (o Alt + ↑/↓ en el texto)" aria-hidden="true">⠿</span>
     <span class="sub-estado" title="${s.completada ? 'Completada' : 'Pendiente'}">${s.completada ? '✓' : '○'}</span>
-    <input class="sub-input" value="${esc(s.titulo || '')}" placeholder="Ej. U108 — actualizar fecha de ejecución" maxlength="200" autocomplete="off">
-    <button type="button" class="ico sub-hija" data-sub-hija title="Agregar una subtarea debajo de esta">↳</button>
+    <div class="sub-campo">
+      <input class="sub-input" value="${esc(s.titulo || '')}" placeholder="Ej. U108 — actualizar fecha de ejecución" maxlength="200" autocomplete="off">
+      <button type="button" class="sub-mas" data-sub-hija title="Agregar una subtarea del siguiente nivel debajo de esta" aria-label="Agregar subtarea debajo">+</button>
+    </div>
     <button type="button" class="ico" data-quitar-sub title="Quitar (con lo que tenga debajo)">✕</button>
   </div>`;
 
@@ -1041,7 +1043,7 @@ function editorSubtareas(subs) {
     <div class="sub-filas">${subs.map(filaSubtarea).join('')}</div>
     <button type="button" class="mini" data-agregar-sub>+ Agregar subtarea</button>
     ${st.ia.activa ? '<button type="button" class="ia-btn mini" data-ia-subtareas title="La IA propone los pasos a partir del título, la descripción y el entregable">✨ Sugerir pasos</button>' : ''}
-    <span class="ayuda">Enter agrega otra · <b>Tab</b> la mete debajo de la anterior, <b>Shift + Tab</b> la saca · ↳ agrega debajo · ⠿ arrastra para ordenar · hasta 3 niveles</span>
+    <span class="ayuda">Enter agrega otra · <b>Tab</b> la mete debajo de la anterior, <b>Shift + Tab</b> la saca · <b>+</b> al final de la barra agrega una del siguiente nivel · ⠿ arrastra para ordenar · hasta 3 niveles</span>
   </div>`;
 }
 
