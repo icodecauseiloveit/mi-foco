@@ -2099,6 +2099,12 @@ def calendario_proximo(dias=21):
     return salida
 
 
+def etiqueta_dia(iso):
+    """2026-11-09 → «Sem46-Lunes» (semana ISO con dos dígitos)."""
+    d = date.fromisoformat(iso)
+    return f"Sem{d.isocalendar()[1]:02d}-{DIAS_SEMANA[d.weekday()]}"
+
+
 @app.get("/api/ia/estado")
 def api_ia_estado():
     return jsonify(activa=ia.activa(), modelo=ia.modelo() if ia.activa() else None)
@@ -2111,7 +2117,7 @@ def api_ia_resumen_semanal():
     dias = []
     for x in s["dias"]:
         item = _limpio({
-            "dia": f"{x['dia_semana']} {x['fecha']}",
+            "dia": etiqueta_dia(x["fecha"]),
             "festivo": x["festivo"],
             "tareas_completadas": [_limpio({"titulo": t["titulo"], "a_tiempo": t["a_tiempo"], "entregable": t["entregable"]})
                                    for t in x["completadas"]],
@@ -2131,16 +2137,18 @@ def api_ia_resumen_semanal():
 Redacta el reporte de lo que se hizo en la semana, para enviarlo a quien hace seguimiento.
 Estilo: prosa breve y fluida, en tercera persona impersonal y en pasado («Se avanzó en…», «quedaron configurados…»,
 «se revisó…»). Nada de títulos, secciones, viñetas, Markdown ni saludos.
-- Un párrafo corto por frente de trabajo (tarea o grupo de tareas relacionadas); normalmente uno a tres párrafos en total.
+- Organízalo por día: un párrafo por cada día con actividad, en orden, que empieza EXACTAMENTE con el valor de «dia»
+  seguido de dos puntos (p. ej. «Sem46-Lunes: Se avanzó…»). Los días sin actividad no se mencionan.
+- Dentro de cada día, une lo relacionado en frases corridas; si un trabajo continúa otro día, no repitas el contexto.
 - Cuenta qué se hizo con los detalles concretos que aparecen en las notas, subtareas y comentarios (unidades, nombres de
   documentos, versiones, fechas). Une lo relacionado en una misma frase en vez de enumerarlo.
 - Si hay novedades o pendientes, dilo dentro del mismo párrafo: qué falta y qué se necesita para cerrarlo
   (p. ej. «Esta subtarea queda abierta hasta que se cargue el documento actualizado.»).
-- No menciones minutos, horas, porcentajes ni días de la semana, salvo que sean parte del contenido.
+- No menciones minutos, horas ni porcentajes, salvo que sean parte del contenido.
 - No agregues conclusiones, valoraciones ni próximos pasos que no estén en los datos.
 
 Ejemplo del tono y la extensión esperados:
-Se avanzó en la configuración del Setup STO Event: en la U108 quedaron configurados el nombre del evento y las fechas
+Sem46-Lunes: Se avanzó en la configuración del Setup STO Event: en la U108 quedaron configurados el nombre del evento y las fechas
 de ejecución y finalización, y en la U109 el nombre del evento. En la conformidad de carpetas de la parada PHD U108 se
 revisó la estructura en SharePoint y aparecieron tres pendientes. Las carpetas “0 Comunicaciones y memorandos” y
 “0 Financiero” están vacías, y “00 Seguimiento plan de hitos” no tiene la versión vigente del plan, que es la 8, porque
