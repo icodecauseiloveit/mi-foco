@@ -4,32 +4,116 @@ Servicio en Python (Flask + SQLite) que corre **100 % en tu equipo** y se usa de
 `http://127.0.0.1:5050`. Tus datos no salen a internet: la interfaz no usa CDN ni librerías externas, y la única
 consulta en línea es la de los festivos de Colombia (ver [Festivos](#festivos)).
 
-## Arranque rápido
+**Contenido:** [Requisitos](#requisitos) · [Instalación desde cero](#instalación-desde-cero-windows) ·
+[Arranque automático](#paso-5--que-arranque-solo-al-encender-el-pc) · [Actualizar (`restartmifoco`)](#actualizar-y-reiniciar-con-un-comando-restartmifoco) ·
+[Primeros pasos](#primeros-pasos-en-la-app) · [Solución de problemas](#solución-de-problemas) · [Qué hace](#qué-hace)
 
-**Windows:** doble clic en `iniciar.bat`. La primera vez crea un entorno virtual (`.venv`) e instala Flask y Waitress; luego abre el navegador.
+## Requisitos
 
-**Manual (cualquier sistema, Python 3.9+):**
-```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements.txt
-python app.py                   # opciones: --puerto 8080  --sin-navegador
+| Necesitas | Para qué | ¿Obligatorio? |
+|---|---|---|
+| **Windows 10 u 11** | Esta guía es para Windows (al final hay notas para macOS/Linux). | — |
+| **Python 3.9 o más reciente** | Ejecutar Mi Foco. Debe estar en el **PATH** al menos para crear el entorno (paso 3). | Sí |
+| **Git** | Descargar el proyecto y traer actualizaciones (`git pull`, `restartmifoco`). Debe estar en el **PATH**. | Recomendado (sin Git puedes usar el ZIP) |
+| **Internet** | Solo la primera vez, para instalar Flask y Waitress con `pip`; luego, solo para festivos. | La primera vez |
+| **Edge o Chrome actualizados** | Usar la interfaz. | Sí |
+
+En esta guía la carpeta del proyecto es **`C:\mi_foco`**. Si usas otra, cámbiala en cada comando.
+
+## Instalación desde cero (Windows)
+
+Todos los comandos se escriben en **PowerShell**: menú Inicio → *Windows PowerShell* (o la terminal de VS Code).
+
+### Paso 1 — Verificar Python y Git
+
+```powershell
+python --version
+git --version
 ```
 
-### Que arranque solo al encender el PC (Windows)
-1. Ejecuta `iniciar.bat` una vez (para crear `.venv`).
-2. `Win + R` → `shell:startup` → crea ahí un **acceso directo** a `iniciar_oculto.vbs`.
-3. Queda corriendo en segundo plano sin consola; abre `http://127.0.0.1:5050` cuando quieras
-   (te sugiero guardarlo como favorito o "instalarlo" como app desde el menú de Edge/Chrome).
+- Si muestran un número de versión (p. ej. `Python 3.12.4`, `git version 2.46.0`), sigue al paso 2.
+- Si dicen *"no se reconoce como nombre de un cmdlet"* o **se abre la Microsoft Store**, no están instalados o no
+  están en el PATH:
+  - **Python:** descarga el instalador de <https://www.python.org/downloads/> y, en la primera pantalla, marca
+    **"Add python.exe to PATH"**. Instalarlo solo para tu usuario no requiere administrador.
+  - **Git:** instálalo desde <https://git-scm.com/download/win> (deja las opciones por defecto; agrega Git al PATH).
+    En equipos de empresa suele pedir administrador o instalarse desde el portal de software de TI.
+  - **Cierra y vuelve a abrir PowerShell** y repite la verificación.
 
-> **Si tu equipo no deja ejecutar `.bat`:** desde la terminal de VS Code (o PowerShell), dentro de la carpeta del proyecto:
-> ```powershell
-> python -m venv .venv
-> .venv\Scripts\python.exe -m pip install -r requirements.txt
-> .venv\Scripts\python.exe app.py
-> ```
+### Paso 2 — Descargar el proyecto
 
-### Detener, actualizar y reiniciar con un comando: `restartmifoco`
+**Con Git (recomendado, permite actualizar con un comando):**
+
+```powershell
+git clone https://github.com/icodecauseiloveit/mi-foco.git C:\mi_foco
+cd C:\mi_foco
+```
+
+**Sin Git:** en <https://github.com/icodecauseiloveit/mi-foco> → botón **Code → Download ZIP**, descomprímelo en
+`C:\mi_foco` (que dentro queden directamente `app.py`, `static\`, etc.) y en PowerShell ejecuta `cd C:\mi_foco`.
+
+### Paso 3 — Crear el entorno e instalar dependencias (una sola vez)
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Esto crea la carpeta `.venv` con un Python propio del proyecto e instala Flask y Waitress ahí (no toca el resto de tu
+equipo). No hace falta "activar" el entorno: siempre se usa `.venv\Scripts\python.exe` directamente, así que
+funciona aunque tu equipo bloquee los scripts `.ps1` o los `.bat`.
+
+> Si `python` no está en el PATH pero tienes el lanzador de Windows, usa `py -m venv .venv`.
+> Si `pip` falla por el proxy de la empresa, consulta [Solución de problemas](#solución-de-problemas).
+
+### Paso 4 — Primer arranque
+
+```powershell
+.venv\Scripts\python.exe app.py
+```
+
+Se abre el navegador en `http://127.0.0.1:5050`. La primera vez se crean solas la carpeta `data\` y la base de datos
+`data\mifoco.db`. Para detenerlo, vuelve a la terminal y presiona **Ctrl + C**.
+
+Opciones: `--puerto 8080` (otro puerto) y `--sin-navegador` (no abrir el navegador).
+
+### Paso 5 — Que arranque solo al encender el PC
+
+Para que Mi Foco quede corriendo **oculto** (sin ventana) cada vez que inicias sesión en Windows, crea un acceso
+directo en la carpeta de Inicio. Pega esto en PowerShell (cambia `C:\mi_foco` si usas otra carpeta):
+
+```powershell
+$carpeta = 'C:\mi_foco'
+$acceso = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetFolderPath('Startup'))\Mi Foco.lnk")
+$acceso.TargetPath = "$carpeta\.venv\Scripts\pythonw.exe"
+$acceso.Arguments = "`"$carpeta\app.py`" --sin-navegador"
+$acceso.WorkingDirectory = $carpeta
+$acceso.Description = 'Mi Foco (servidor local)'
+$acceso.Save()
+```
+
+`pythonw.exe` es Python sin ventana de consola. Para arrancarlo ya mismo sin reiniciar el PC:
+
+```powershell
+Start-Process C:\mi_foco\.venv\Scripts\pythonw.exe -ArgumentList '"C:\mi_foco\app.py"','--sin-navegador' -WindowStyle Hidden
+```
+
+Para **quitar** el arranque automático, borra *Mi Foco* de la carpeta de Inicio (`Win + R` → `shell:startup`).
+
+> Alternativa: en `shell:startup` crea un acceso directo a `iniciar_oculto.vbs` (o usa `iniciar.bat` para arrancar
+> con ventana). Algunos equipos de empresa bloquean `.bat` y `.vbs`; el acceso directo de arriba no los necesita.
+
+### Paso 6 — Tenerlo a mano en el navegador
+
+Abre `http://127.0.0.1:5050` y guárdalo como **favorito**, o instálalo como aplicación:
+en **Edge** → menú `…` → *Aplicaciones* → *Instalar este sitio como una aplicación*; en **Chrome** → menú `⋮` →
+*Transmitir, guardar y compartir* → *Instalar página como aplicación*. Así se abre en su propia ventana y puedes
+anclarlo a la barra de tareas.
+
+Luego, en la app: **⚙ Herramientas → 🔔 Activar notificaciones** para recibir los avisos de Windows (vencimientos,
+descansos, tareas desbloqueadas).
+
+## Actualizar y reiniciar con un comando: `restartmifoco`
 
 Como Mi Foco corre oculto (sin ventana), para traer cambios de GitHub hay que **detenerlo, hacer `git pull` y
 volver a arrancarlo**. La función de PowerShell `restartmifoco` hace las tres cosas:
@@ -57,11 +141,11 @@ if (!(Test-Path $PROFILE.CurrentUserAllHosts)) { New-Item -ItemType File -Path $
 notepad $PROFILE.CurrentUserAllHosts
 ```
 
-*Paso 3 — pegar la función*, guardar y cerrar (si tu carpeta no es `C:\Gary\mi_foco`, cambia `$carpeta`):
+*Paso 3 — pegar la función*, guardar y cerrar. **Cambia `$carpeta`** por la carpeta donde instalaste Mi Foco:
 
 ```powershell
 function restartmifoco {
-    $carpeta = 'C:\Gary\mi_foco'
+    $carpeta = 'C:\mi_foco'
     $puerto  = 5050
     Push-Location $carpeta
     try {
@@ -98,7 +182,8 @@ function restartmifoco {
 }
 ```
 
-> Los mensajes van sin tildes a propósito: Windows PowerShell 5 lee mal los acentos de un perfil guardado con el Bloc de notas.
+> Los mensajes y comentarios van sin tildes a propósito: Windows PowerShell 5 lee mal los acentos de un perfil
+> guardado con el Bloc de notas.
 
 *Paso 4 — cargarla* en la terminal actual (las terminales nuevas la cargan solas):
 
@@ -106,7 +191,7 @@ function restartmifoco {
 . $PROFILE.CurrentUserAllHosts
 ```
 
-**Usarla:** en cualquier terminal escribe
+**Usarla:** en cualquier terminal, desde cualquier carpeta:
 
 ```powershell
 restartmifoco
@@ -134,17 +219,53 @@ Get-ExecutionPolicy -List
 **Hacerlo a mano (sin la función):**
 
 ```powershell
+cd C:\mi_foco
 Get-NetTCPConnection -LocalPort 5050 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess }   # detener
 git pull                                                                                                     # actualizar
-Start-Process .venv\Scripts\pythonw.exe -ArgumentList "app.py --sin-navegador" -WorkingDirectory C:\Gary\mi_foco -WindowStyle Hidden   # arrancar
+Start-Process .venv\Scripts\pythonw.exe -ArgumentList 'app.py','--sin-navegador' -WindowStyle Hidden        # arrancar
 ```
 
 O desde el Administrador de tareas (`Ctrl + Shift + Esc`) → pestaña **Detalles** → `pythonw.exe` (el de `app.py`
-en la columna *Línea de comandos*) → *Finalizar tarea*.
+en la columna *Línea de comandos*) → *Finalizar tarea*. **Sin Git**, descarga de nuevo el ZIP y copia los archivos
+encima **sin tocar la carpeta `data`**.
 
 **¿Cuándo hace falta reiniciar?** Si el cambio fue solo de la interfaz (archivos de `static/`), basta con `git pull`
 y `Ctrl + F5`. Si cambió el servidor (`app.py`, `db.py`, `festivos.py`…) o la base de datos, reinicia; con
-`restartmifoco` no tienes que pensarlo: siempre hace todo.
+`restartmifoco` no tienes que pensarlo: siempre hace todo. Las actualizaciones nunca borran tus datos: la base se
+migra sola al arrancar.
+
+## Primeros pasos en la app
+
+1. **⚙ Herramientas → 🏷 Categorías y descripciones:** crea tus categorías (p. ej. *Trabajo*, *Estudio*, *Personal*)
+   y, si quieres, dales un emoji o una imagen.
+2. **Metas de aprendizaje → + Nueva meta:** la herramienta que quieres dominar, nivel actual y objetivo, horas y fecha.
+3. **+ Nueva tarea** (o la tecla **N**): título, **entregable** (qué debe existir para darla por terminada), prioridad
+   **ABCDE**, fecha límite, subtareas y, si aplica, de qué otra tarea depende.
+4. Marca como **🐸 rana** la tarea más importante del día y empieza el día con **Comer la rana ▶** en la vista Hoy.
+5. Al final de la semana: **Historial → 📅 Reporte semanal** y **⚙ Herramientas → 📤 Reporte de cumplimiento**
+   para enviarlo por correo.
+
+## Solución de problemas
+
+| Síntoma | Causa y solución |
+|---|---|
+| `python` *no se reconoce* o abre la Microsoft Store | Python no está instalado o no está en el PATH. Instálalo marcando *Add python.exe to PATH* (paso 1), o usa `py` en su lugar. Para quitar el atajo de la Store: Configuración → Aplicaciones → *Alias de ejecución de aplicaciones* → desactiva `python.exe`. |
+| `git` *no se reconoce* | Git no está instalado o no está en el PATH. Instálalo (paso 1) y abre una terminal nueva. Mientras tanto, usa el ZIP. |
+| `pip install` falla con errores de conexión, SSL o proxy | La red de la empresa usa proxy. Prueba `.venv\Scripts\python.exe -m pip install -r requirements.txt --proxy http://USUARIO:CLAVE@PROXY:PUERTO` (pide los datos a TI) o instala desde otra red. |
+| No deja ejecutar `.bat`, `.vbs` o `.ps1` | Usa los comandos de esta guía: llaman a `.venv\Scripts\python.exe` directamente y no necesitan scripts. Para el perfil de `restartmifoco`, ver la política de ejecución en su sección. |
+| La página no carga en `http://127.0.0.1:5050` | Mi Foco no está corriendo. Ejecuta `restartmifoco`, o `.venv\Scripts\python.exe app.py` para ver el error en pantalla. |
+| *Address already in use* / el puerto 5050 está ocupado | Ya hay un Mi Foco corriendo (oculto) u otro programa usa el puerto. Detenlo con `restartmifoco` o arranca con `--puerto 8080` (y cambia `$puerto` en la función y en el acceso directo). |
+| Los festivos dicen *"calculados localmente"* | La red bloqueó la API de festivos. Mi Foco los calcula igual (Ley Emiliani); en Historial → Reporte semanal puedes *Reintentar consulta en línea*. |
+| Quiero pasar Mi Foco a otro equipo | Instala desde cero en el equipo nuevo y copia la carpeta **`data`** completa (base de datos, adjuntos y respaldos) encima de la nueva. |
+
+### macOS / Linux
+
+```bash
+git clone https://github.com/icodecauseiloveit/mi-foco.git ~/mi_foco && cd ~/mi_foco
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python app.py          # o ./iniciar.sh
+```
 
 ## Qué hace
 
