@@ -236,6 +236,26 @@ function dibujarReporte(datos, { autor = '' } = {}) {
   return lienzo;
 }
 
+/* ── correo redactado con IA ── */
+async function redactarCorreoReporte(boton) {
+  const r = await conIA(boton, () => api('/api/ia/correo-reporte', { method: 'POST', body: {
+    desde: rptState.desde, hasta: rptState.hasta, categoria: rptState.categoria, sin_fecha: rptState.sinFecha, autor: rptState.autor.trim() } }));
+  const caja = $('#rpt-correo');
+  if (!caja) return;
+  caja.innerHTML = `<div class="rpt-correo">
+      <h3>✨ Correo sugerido <small class="sutil">revísalo y edítalo antes de enviarlo</small></h3>
+      <label>Asunto<div class="fila-copiar"><input id="rpt-asunto" value="${esc(r.asunto)}">
+        <button type="button" class="mini" data-ia-copiar="#rpt-asunto" data-ia-msg="📋 Asunto copiado">📋</button></div></label>
+      <label>Cuerpo<textarea id="rpt-cuerpo" rows="10">${esc(r.cuerpo)}</textarea></label>
+      <div class="botones">
+        <span class="ayuda" style="margin-right:auto">Pega el cuerpo y luego la imagen del reporte (Ctrl + V).</span>
+        <button type="button" class="secundario" data-rpt-mailto>✉ Abrir en el correo</button>
+        <button type="button" class="primario" data-ia-copiar="#rpt-cuerpo" data-ia-msg="📋 Texto del correo copiado">📋 Copiar texto</button>
+      </div>
+    </div>`;
+  caja.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 /* ── ventana del reporte ── */
 async function abrirReporte() {
   if (!rptState.desde) { const [a, b] = rangoRapido(rptState.periodo); rptState.desde = isoLocal(a); rptState.hasta = isoLocal(b); }
@@ -253,8 +273,10 @@ async function abrirReporte() {
       <label class="check"><input type="checkbox" name="sin_fecha" ${rptState.sinFecha ? 'checked' : ''}> Incluir pendientes sin fecha límite</label>
     </form>
     <div class="rpt-vista" id="rpt-vista"><div class="vacio">Generando…</div></div>
+    <div id="rpt-correo"></div>
     <div class="botones">
       <span class="ayuda" style="margin-right:auto">Copia la imagen y pégala en el cuerpo del correo con <b>Ctrl + V</b>.</span>
+      ${st.ia.activa ? '<button type="button" class="ia-btn" data-rpt-correo title="La IA redacta el asunto y el texto del correo que acompaña la imagen">✨ Redactar correo</button>' : ''}
       <button type="button" class="secundario" data-rpt-descargar>⬇ Descargar PNG</button>
       <button type="button" class="primario" data-rpt-copiar>📋 Copiar imagen</button>
     </div>`);
@@ -303,8 +325,14 @@ function descargarReporte() {
 
 let rptTemporizador;
 document.addEventListener('click', (e) => {
-  const b = e.target.closest('[data-rpt-rango], [data-rpt-copiar], [data-rpt-descargar]');
+  const b = e.target.closest('[data-rpt-rango], [data-rpt-copiar], [data-rpt-descargar], [data-rpt-correo], [data-rpt-mailto]');
   if (!b) return;
+  if (b.dataset.rptCorreo !== undefined) { redactarCorreoReporte(b).catch((err) => toast(err.message, 'error')); return; }
+  if (b.dataset.rptMailto !== undefined) {
+    const url = `mailto:?subject=${encodeURIComponent($('#rpt-asunto').value)}&body=${encodeURIComponent($('#rpt-cuerpo').value)}`;
+    window.location.href = url;
+    return;
+  }
   if (b.dataset.rptRango) {
     rptState.periodo = b.dataset.rptRango;
     const [a, z] = rangoRapido(rptState.periodo);

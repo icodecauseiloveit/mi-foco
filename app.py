@@ -8,6 +8,7 @@ import base64
 import binascii
 import csv
 import io
+import json
 import os
 import mimetypes
 import re
@@ -20,9 +21,13 @@ from datetime import date, datetime, timedelta
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-import db
-import festivos as festivos_co
-from frases import frase_aleatoria, frase_del_dia
+import ia
+
+ia.cargar_env()  # antes de importar db: el .env también puede definir MIFOCO_DB
+
+import db  # noqa: E402
+import festivos as festivos_co  # noqa: E402
+from frases import frase_aleatoria, frase_del_dia  # noqa: E402
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -2050,6 +2055,340 @@ def api_alertas():
     orden = {"peligro": 0, "aviso": 1, "info": 2}
     alertas.sort(key=lambda a: orden[a["nivel"]])
     return jsonify(alertas)
+
+
+# ───────────────────────── asistente con IA (opcional) ─────────────────────────
+ESTILO_IA = ("Eres el asistente de Mi Foco, el gestor de tareas personal del usuario. Escribe en español de Colombia, "
+             "claro, profesional y concreto, sin relleno ni frases motivacionales vacías. No inventes datos: usa solo "
+             "la información que se te entrega.")
+
+
+@app.errorhandler(ia.ErrorIA)
+def _err_ia(e):
+    return jsonify(error=str(e)), 502
+
+
+def _json(x):
+    return json.dumps(x, ensure_ascii=False, separators=(",", ":"))
+
+
+def _limpio(d):
+    """Quita campos vacíos para no gastar tokens en ellos."""
+    return {k: v for k, v in d.items() if v is not None and not (isinstance(v, (str, list, dict)) and not v)}
+
+
+def datos_de(vista, **query):
+    """Reutiliza el cálculo de otro endpoint (reporte, semana, estadísticas) sin duplicar la lógica."""
+    with app.test_request_context(query_string={k: v for k, v in query.items() if v not in (None, "")}):
+        return vista().get_json()
+
+
+def calendario_proximo(dias=21):
+    hoy = date.today()
+    fest = {}
+    try:
+        with db.conexion() as conn:
+            for a in sorted({hoy.year, (hoy + timedelta(days=dias)).year}):
+                fest.update(festivos_co.obtener(conn, a)[0])
+    except Exception:  # sin festivos el calendario sigue sirviendo
+        pass
+    salida = []
+    for i in range(dias):
+        d = hoy + timedelta(days=i)
+        salida.append(f"{DIAS_SEMANA[d.weekday()]} {d.isoformat()}" + (f" (festivo: {fest[d.isoformat()]})" if d.isoformat() in fest else ""))
+    return salida
+
+
+@app.get("/api/ia/estado")
+def api_ia_estado():
+    return jsonify(activa=ia.activa(), modelo=ia.modelo() if ia.activa() else None)
+
+
+@app.post("/api/ia/resumen-semanal")
+def api_ia_resumen_semanal():
+    d = body()
+    s = datos_de(api_semana, anio=d.get("anio"), semana=d.get("semana"))
+    dias = []
+    for x in s["dias"]:
+        item = _limpio({
+            "dia": f"{x['dia_semana']} {x['fecha']}",
+            "festivo": x["festivo"],
+            "tareas_completadas": [_limpio({"titulo": t["titulo"], "a_tiempo": t["a_tiempo"], "entregable": t["entregable"]})
+                                   for t in x["completadas"]],
+            "subtareas_completadas": [f"{v['titulo']} (de «{v['tarea']['titulo']}»)" for v in x["subtareas"]],
+            "tiempo_trabajado": [_limpio({"tarea": t["titulo"], "minutos": t["minutos"],
+                                          "que_se_hizo": [n["nota"] for n in t["notas"]]}) for t in x["trabajadas"]],
+            "comentarios": [f"«{c['tarea']['titulo']}»: {c['texto']}" for c in x["comentarios"]],
+            "novedades": [f"{'RESUELTA' if n['resuelta'] else 'ABIERTA'} en «{n['tarea']['titulo']}»: {n['texto']}"
+                          for n in x["novedades"]],
+            "aprendizaje": [f"{p['meta']} {p['minutos']} min" + (f": {p['nota']}" if p["nota"] else "") for p in x["practica"]],
+        })
+        if len(item) > 1 and set(item) != {"dia", "festivo"}:
+            dias.append(item)
+    if not dias:
+        raise ValueError("Esa semana no tiene actividad registrada para resumir.")
+    proximas = []
+    if s["es_actual"]:
+        tope = datetime.fromisoformat(s["hasta"]) + timedelta(days=8)
+        with db.conexion() as conn:
+            marcar_vencidas(conn)
+            for t in listar_tareas(conn):
+                lim = limite_dt(t["fecha_limite"])
+                if t["vencida"] or (lim and lim < tope):
+                    proximas.append(_limpio({"titulo": t["titulo"], "prioridad": t["prioridad"], "fecha_limite": t["fecha_limite"],
+                                             "vencida": t["vencida"], "avance_pct": t["progreso_pct"]}))
+    sistema = ESTILO_IA + """
+Redacta el resumen semanal de trabajo, listo para pegar en un correo o enviarlo a quien hace seguimiento.
+Texto plano, sin Markdown (nada de asteriscos ni #):
+- Primera línea: «Resumen semana N (fechas)».
+- Un párrafo corto (2-3 frases) con lo principal de la semana.
+- «Logros:» viñetas «• » con lo completado, agrupando lo relacionado.
+- «En curso:» lo trabajado que no se terminó, apoyándote en lo que se hizo en cada sesión.
+- «Novedades:» solo si hay novedades abiertas: qué bloquea y qué se necesita.
+- «Próxima semana:» solo si hay pendientes próximos.
+Omite las secciones vacías. Expresa el tiempo en horas solo cuando aporte."""
+    usuario = (f"Semana {s['semana']} de {s['anio']} (lunes {s['desde']} a domingo {s['hasta']}).\n"
+               f"Totales: {_json(s['resumen'])}\nActividad por día: {_json(dias)}"
+               + (f"\nPendientes próximos o vencidos: {_json(proximas[:15])}" if proximas else ""))
+    return jsonify(texto=ia.chat(sistema, usuario))
+
+
+@app.post("/api/ia/correo-reporte")
+def api_ia_correo_reporte():
+    d = body()
+    r = datos_de(api_reporte, desde=d.get("desde"), hasta=d.get("hasta"), categoria=d.get("categoria"),
+                 sin_fecha="1" if d.get("sin_fecha", True) else "0")
+    if not r["actividades"]:
+        raise ValueError("El reporte no tiene actividades en ese periodo.")
+    acts = [_limpio({
+        "titulo": a["titulo"], "prioridad": a["prioridad"], "estado": a["estado_texto"], "avance_pct": a["progreso"],
+        "fecha_limite": a["fecha_limite"], "entregable": a["entregable"],
+        "novedad": (a["novedad"] or {}).get("texto"),
+        "novedades_subtareas": [f"{x['titulo']}: {x['texto']}" for x in a["novedades_sub"]],
+        "ultimo_comentario": (a["ultimo_comentario"] or {}).get("texto"),
+    }) for a in r["actividades"][:60]]
+    autor = (d.get("autor") or "").strip()[:60]
+    sistema = ESTILO_IA + """
+Redacta el correo que acompaña un reporte de cumplimiento de actividades. El reporte va como imagen pegada en el cuerpo
+del correo, así que el texto no repite la tabla: la resume y destaca lo que requiere atención.
+- asunto: corto, con el periodo.
+- cuerpo, en texto plano sin Markdown: saludo breve («Buen día,»), un párrafo con el estado general usando los
+  indicadores (cumplimiento, a tiempo, avance), viñetas «• » con lo vencido, con novedad o bloqueado y qué se necesita
+  (omítelas si no hay), una línea que indique que el detalle está en la imagen, y un cierre cordial""" + (
+        f" firmado por {autor}." if autor else " sin firma.")
+    usuario = (f"Periodo: {r['desde']} a {r['hasta']}" + (f" · categoría {r['categoria']}" if r["categoria"] else "")
+               + f"\nIndicadores: {_json(_limpio(r['kpis']))}\nActividades: {_json(acts)}")
+    return jsonify(ia.chat(sistema, usuario, esquema={"nombre": "correo", "schema": ia.objeto({"asunto": ia.TEXTO, "cuerpo": ia.TEXTO})}))
+
+
+@app.post("/api/ia/interpretar-tarea")
+def api_ia_interpretar_tarea():
+    texto = (body().get("texto") or "").strip()
+    if not texto:
+        raise ValueError("Escribe la tarea como la dirías.")
+    if len(texto) > 2000:
+        raise ValueError("El texto es muy largo (máximo 2000 caracteres).")
+    with db.conexion() as conn:
+        cats = [c["nombre"] for c in catalogos(conn)["categorias"]]
+    ahora = datetime.now()
+    sistema = ESTILO_IA + f"""
+Convierte la descripción de una tarea, escrita en lenguaje natural, en los campos del formulario de Mi Foco.
+- titulo: corto y accionable (empieza con verbo), máximo 90 caracteres.
+- descripcion: detalles útiles que no caben en el título; vacío si no hay.
+- prioridad (método ABCDE de Brian Tracy): A = consecuencias graves si no se hace; B = consecuencias leves;
+  C = sería bueno hacerla; D = delegable; E = eliminable. Si el texto no da pistas, B.
+- categoria: una de las existentes si encaja (escrita igual); si ninguna encaja y el texto la menciona, una nueva corta; si no, "General".
+- fecha_limite: AAAA-MM-DDTHH:MM, resolviendo «el jueves», «mañana», «fin de mes», etc. con el calendario dado.
+  Si no se dice la hora, usa {ia.fin_jornada()}. Vacío si no hay fecha.
+- estimado_min: minutos si se mencionan; 0 si no.
+- entregable: qué debe existir para darla por terminada, si se menciona; vacío si no.
+- subtareas: los pasos que el texto enumera; lista vacía si no enumera pasos.
+- es_rana: true solo si el texto dice que es lo más importante o lo primero del día."""
+    usuario = (f"Ahora: {DIAS_SEMANA[ahora.weekday()]} {ahora:%Y-%m-%d %H:%M}\nCalendario próximo: {_json(calendario_proximo())}\n"
+               f"Categorías existentes: {_json(cats)}\n\nTexto: {texto}")
+    esquema = ia.objeto({
+        "titulo": ia.TEXTO, "descripcion": ia.TEXTO, "prioridad": {"type": "string", "enum": list(PRIORIDADES)},
+        "categoria": ia.TEXTO, "fecha_limite": ia.TEXTO, "estimado_min": {"type": "integer"}, "entregable": ia.TEXTO,
+        "subtareas": {"type": "array", "items": ia.TEXTO}, "es_rana": {"type": "boolean"}})
+    r = ia.chat(sistema, usuario, esquema={"nombre": "tarea", "schema": esquema})
+    if r.get("fecha_limite"):
+        try:
+            r["fecha_limite"] = datetime.fromisoformat(r["fecha_limite"]).strftime("%Y-%m-%dT%H:%M")
+        except ValueError:
+            r["fecha_limite"] = ""
+    r["titulo"] = (r.get("titulo") or "").strip()[:200] or texto[:200]
+    r["categoria"] = (r.get("categoria") or "").strip()[:60] or "General"
+    r["subtareas"] = [x.strip()[:200] for x in r.get("subtareas") or [] if x.strip()][:30]
+    r["estimado_min"] = max(0, min(int(r.get("estimado_min") or 0), 100000))
+    return jsonify(r)
+
+
+@app.post("/api/ia/sugerir-subtareas")
+def api_ia_sugerir_subtareas():
+    d = body()
+    titulo = (d.get("titulo") or "").strip()
+    if not titulo:
+        raise ValueError("Escribe primero el título de la tarea.")
+    existentes = [x.strip() for x in (d.get("existentes") or []) if isinstance(x, str) and x.strip()][:40]
+    sistema = ESTILO_IA + """
+Propón los pasos (subtareas) para completar la tarea. Cada paso es una acción concreta y verificable que empieza con
+verbo, de máximo 80 caracteres. Entre 3 y 7 pasos, en orden de ejecución. No repitas los pasos que ya existen ni el
+entregable (se agrega aparte como último paso)."""
+    usuario = _json(_limpio({"titulo": titulo, "descripcion": d.get("descripcion"), "categoria": d.get("categoria"),
+                             "entregable": d.get("entregable"), "subtareas_existentes": existentes}))
+    r = ia.chat(sistema, usuario, esquema={"nombre": "subtareas", "schema": ia.objeto({"subtareas": {"type": "array", "items": ia.TEXTO}})})
+    ya = {x.lower() for x in existentes} | {(d.get("entregable") or "").strip().lower()}
+    return jsonify(subtareas=[x.strip()[:200] for x in r.get("subtareas") or [] if x.strip() and x.strip().lower() not in ya][:10])
+
+
+TIPOS_TEXTO = {
+    "nota": "la nota de lo que se hizo durante una sesión de trabajo (queda en el reporte semanal)",
+    "comentario": "un comentario de seguimiento de una tarea",
+    "novedad": "una novedad: lo que impide terminar una tarea",
+}
+
+
+@app.post("/api/ia/mejorar-texto")
+def api_ia_mejorar_texto():
+    d = body()
+    texto = (d.get("texto") or "").strip()
+    if not texto:
+        raise ValueError("Escribe algo primero para mejorar la redacción.")
+    tipo = d.get("tipo") if d.get("tipo") in TIPOS_TEXTO else "nota"
+    sistema = ESTILO_IA + f"""
+Mejora la redacción de {TIPOS_TEXTO[tipo]}. Corrige ortografía, tildes y puntuación, y deja el texto claro y
+profesional, en primera persona y en pasado cuando describe trabajo hecho. No agregues información, cifras ni
+conclusiones que no estén en el original; conserva nombres, códigos y siglas (p. ej. U108, STO, PHD) tal cual.
+Mantén una extensión similar. Devuelve solo el texto mejorado, sin comillas ni explicaciones."""
+    contexto = " › ".join(x for x in [d.get("tarea"), d.get("subtarea")] if x)
+    usuario = (f"Tarea: {contexto}\n\n" if contexto else "") + f"Texto:\n{texto[:4000]}"
+    mejorado = ia.chat(sistema, usuario).strip()
+    if len(mejorado) > 1 and mejorado[0] + mejorado[-1] in ('""', "«»", "“”"):
+        mejorado = mejorado[1:-1].strip()
+    return jsonify(texto=mejorado)
+
+
+@app.post("/api/ia/plan-dia")
+def api_ia_plan_dia():
+    ahora = datetime.now()
+    with db.conexion() as conn:
+        marcar_vencidas(conn)
+        abiertas = listar_tareas(conn)
+    if not abiertas:
+        raise ValueError("No tienes tareas abiertas para planear.")
+    ratio = datos_de(api_estadisticas, dias=60)["ratio_real_vs_estimado"]
+    lista = []
+    for t in sorted(abiertas, key=lambda t: (t["prioridad"], t["fecha_limite"] or "9999"))[:40]:
+        lista.append(_limpio({
+            "id": t["id"], "titulo": t["titulo"], "prioridad": t["prioridad"], "rana": bool(t["es_rana"]),
+            "estado": t["estado"], "fecha_limite": t["fecha_limite"], "vencida": t["vencida"],
+            "estimado_min": t["estimado_min"], "tiempo_dedicado_min": round(t["tiempo_real_min"] or 0),
+            "avance_pct": t["progreso_pct"],
+            "bloqueada_esperando": [x["titulo"] for x in t["dependencias"] if not x["completa"]] if t["bloqueada"] else None,
+            "novedad": t["novedad"] or ([f"{x['titulo']}: {x['novedad']}" for x in t["novedades_sub"]] or None),
+            "subtareas_pendientes": [x["titulo"] for x in t["subtareas"] if not x["completada"]][:8],
+        }))
+    fin = ia.fin_jornada()
+    sistema = ESTILO_IA + f"""
+Planea el día de trabajo con el método de Brian Tracy: primero la «rana» (la tarea A más importante), luego el resto de
+las A y después las B; lo vencido o que vence hoy sube de prioridad; lo bloqueado o con novedad abierta solo entra si
+hay algo que hacer para desbloquearlo. Considera el tiempo disponible hasta el fin de la jornada ({fin}) y la relación
+real/estimado del usuario para ajustar los tiempos. Incluye solo lo que cabe razonablemente hoy (normalmente 3 a 6 tareas).
+- resumen: 1-2 frases con el enfoque del día.
+- orden: las tareas en el orden a ejecutar, con su id (de la lista), un motivo breve (máximo 15 palabras) y los minutos sugeridos para hoy.
+- advertencias: riesgos concretos (vencidas que no caben, bloqueos, sobrecarga); vacío si no hay."""
+    usuario = (f"Ahora: {DIAS_SEMANA[ahora.weekday()]} {ahora:%Y-%m-%d %H:%M}. Fin de jornada: {fin}.\n"
+               f"Relación tiempo real/estimado del usuario (últimos 60 días): {ratio if ratio is not None else 'sin datos'}.\n"
+               f"Tareas abiertas: {_json(lista)}")
+    esquema = ia.objeto({
+        "resumen": ia.TEXTO,
+        "orden": {"type": "array", "items": ia.objeto({"id": {"type": "integer"}, "motivo": ia.TEXTO, "minutos": {"type": "integer"}})},
+        "advertencias": ia.TEXTO})
+    r = ia.chat(sistema, usuario, esquema={"nombre": "plan_dia", "schema": esquema})
+    validas, vistos, orden = {t["id"] for t in abiertas}, set(), []
+    for o in r.get("orden") or []:
+        if o["id"] in validas and o["id"] not in vistos:
+            vistos.add(o["id"])
+            orden.append({**o, "minutos": max(0, int(o.get("minutos") or 0))})
+    r["orden"] = orden
+    return jsonify(r)
+
+
+@app.post("/api/ia/analisis-rendimiento")
+def api_ia_analisis_rendimiento():
+    dias = max(7, min(365, int(body().get("dias") or 30)))
+    s = datos_de(api_estadisticas, dias=dias)
+    if not s["completadas"] and not s["minutos_foco"]:
+        raise ValueError("Aún no hay suficiente actividad en ese periodo para analizar.")
+    desde = (date.today() - timedelta(days=dias - 1)).isoformat()
+    with db.conexion() as conn:
+        tareas = listar_tareas(conn, incluir_cerradas=True)
+    por_cat = {}
+    for t in tareas:
+        if t["estado"] != "completada" or not t["completada_en"] or t["completada_en"][:10] < desde:
+            continue
+        c = por_cat.setdefault(t["categoria"] or "General", {"completadas": 0, "tarde": 0, "real_min": 0, "estimado_min": 0})
+        c["completadas"] += 1
+        c["tarde"] += 1 if t["completada_a_tiempo"] is False else 0
+        if t["estimado_min"] and t["tiempo_real_min"]:
+            c["real_min"] += round(t["tiempo_real_min"])
+            c["estimado_min"] += t["estimado_min"]
+    semanas = {}
+    for x in s.pop("serie"):
+        a, n, _ = date.fromisoformat(x["fecha"]).isocalendar()
+        w = semanas.setdefault(f"{a}-S{n:02d}", {"semana": f"{a}-S{n:02d}", "completadas": 0, "minutos_foco": 0, "minutos_aprendizaje": 0})
+        for k in ("completadas", "minutos_foco", "minutos_aprendizaje"):
+            w[k] += x[k]
+    sistema = ESTILO_IA + """
+Analiza el rendimiento del usuario a partir de sus métricas de Mi Foco y entrega un diagnóstico útil.
+Texto plano, sin Markdown:
+- «Diagnóstico:» 2-3 frases con la lectura general, citando cifras.
+- «Lo que va bien:» 2-3 viñetas «• ».
+- «Patrones a mejorar:» 2-4 viñetas, cada una con el patrón y la cifra que lo muestra (p. ej. categorías donde tarda
+  mucho más de lo estimado, entregas tarde, poco foco en A/B, muchas reprogramaciones).
+- «Para las próximas dos semanas:» 3 acciones concretas y medibles.
+Si un dato no alcanza para concluir algo, no lo concluyas.
+Glosario: puntaje 0-100 = 40 % entregas a tiempo + 30 % cumplimiento (completadas/creadas) + 20 % foco en A+B +
+10 % precisión de estimación; ratio_real_vs_estimado > 1 significa que tarda más de lo estimado."""
+    usuario = (f"Periodo: últimos {dias} días.\nMétricas: {_json(s)}\nPor semana: {_json(list(semanas.values()))}\n"
+               f"Por categoría: {_json(por_cat)}")
+    return jsonify(texto=ia.chat(sistema, usuario))
+
+
+@app.get("/api/ia/frase")
+def api_ia_frase():
+    """Frase del día al estilo Brian Tracy, relacionada con tu situación. Se genera una vez al día y se guarda."""
+    hoy = date.today()
+    clave = f"frase-{hoy.isoformat()}"
+    with db.conexion() as conn:
+        fila = conn.execute("SELECT valor FROM ia_cache WHERE clave=?", (clave,)).fetchone()
+        if fila and not request.args.get("nueva"):
+            return jsonify(json.loads(fila["valor"]))
+        marcar_vencidas(conn)
+        abiertas = listar_tareas(conn)
+    rana = next((t for t in sorted(abiertas, key=lambda t: t["prioridad"]) if t["es_rana"]), None)
+    situacion = {
+        "dia": DIAS_SEMANA[hoy.weekday()], "pendientes": len(abiertas),
+        "vencidas": sum(1 for t in abiertas if t["vencida"]),
+        "tareas_A": sum(1 for t in abiertas if t["prioridad"] == "A"),
+        "con_novedad": sum(1 for t in abiertas if t.get("con_novedad")),
+        "rana_del_dia": rana["titulo"] if rana else None,
+    }
+    sistema = ESTILO_IA + """
+Escribe la frase del día al estilo de Brian Tracy (Eat That Frog, método ABCDE, foco en lo vital, disciplina, regla
+80/20). Debe ser ORIGINAL: no cites textualmente sus libros. Relaciónala con la situación del día.
+- texto: la frase, máximo 25 palabras.
+- principio: nombre corto del principio (2 a 5 palabras).
+- practica: una acción concreta para hoy, máximo 18 palabras (puede mencionar la rana del día)."""
+    r = ia.chat(sistema, f"Situación de hoy: {_json(situacion)}",
+                esquema={"nombre": "frase", "schema": ia.objeto({"texto": ia.TEXTO, "principio": ia.TEXTO, "practica": ia.TEXTO})},
+                max_tokens=2000)
+    r["ia"] = True
+    with db.conexion() as conn:
+        conn.execute("INSERT OR REPLACE INTO ia_cache (clave, valor, creado_en) VALUES (?,?,?)",
+                     (clave, json.dumps(r, ensure_ascii=False), db.ahora()))
+        conn.execute("DELETE FROM ia_cache WHERE clave LIKE 'frase-%' AND clave < ?", (f"frase-{(hoy - timedelta(days=30)).isoformat()}",))
+    return jsonify(r)
 
 
 # ───────────────────────── otros ─────────────────────────

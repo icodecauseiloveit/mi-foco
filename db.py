@@ -149,6 +149,13 @@ CREATE TABLE IF NOT EXISTS festivos (
 );
 CREATE INDEX IF NOT EXISTS ix_festivos_anio ON festivos(anio);
 
+-- Respuestas de la IA que se reutilizan (p. ej. la frase del día).
+CREATE TABLE IF NOT EXISTS ia_cache (
+    clave      TEXT PRIMARY KEY,
+    valor      TEXT NOT NULL,
+    creado_en  TEXT NOT NULL
+);
+
 -- Catálogos reutilizables al crear tareas.
 CREATE TABLE IF NOT EXISTS categorias (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

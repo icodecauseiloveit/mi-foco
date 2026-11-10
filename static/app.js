@@ -32,6 +32,8 @@ const st = {
   hist: { tab: 'semana', anio: null, semana: null },          // en Hoy van plegadas; aquí las que el usuario abrió   // tareas cuya lista de subtareas el usuario abrió/cerró a mano
   filtros: { estado: 'abiertas', prioridad: '', categoria: '', q: '' },
   periodo: 30,
+  ia: { activa: false },         // asistente con IA (solo si hay OPENAI_API_KEY en .env)
+  fraseIA: null,
   alertas: [],
   notificadas: new Set(),
   activa: null,        // { titulo, base, desde }
@@ -481,7 +483,9 @@ const kpi = (valor, etiqueta, detalle = '', clase = '') =>
 
 /* ─────────── vistas ─────────── */
 async function vistaHoy() {
-  const [frase, stats] = await Promise.all([api('/api/frase'), api('/api/estadisticas?dias=1'), cargarTareas(), cargarCatalogos()]);
+  const fraseHoy = st.fraseIA && st.fraseIA.dia === hoyISO() ? st.fraseIA : null;
+  const [frase, stats] = await Promise.all([fraseHoy || api('/api/frase'), api('/api/estadisticas?dias=1'), cargarTareas(), cargarCatalogos()]);
+  if (st.ia.activa && !fraseHoy) setTimeout(cargarFraseIA, 0);
   const abiertas = st.tareas.filter(abierta);
   const hoy = hoyISO();
   const completadasHoy = st.tareas.filter((t) => t.estado === 'completada' && (t.completada_en || '').startsWith(hoy));
@@ -541,6 +545,7 @@ async function vistaHoy() {
       <div class="${nVenc ? 'con-vencidas' : ''}"><b>${nVenc}</b><span>vencida${nVenc === 1 ? '' : 's'}</span></div>
       <div><b>${completadasHoy.length}</b><span>hechas hoy</span></div>
       <div><b>${fmtMin(stats.minutos_foco)}</b><span>de foco${stats.racha_dias ? ` · 🔥 ${stats.racha_dias}` : ''}</span></div>
+      ${st.ia.activa && abiertas.length ? '<div class="resumen-ia"><button class="ia-btn" data-ia-plan title="La IA ordena tus pendientes para hoy (método de la rana)">✨ Planear mi día</button></div>' : ''}
     </div>`;
 
   const panel = (titulo, lista, vacio, tipo) => `
@@ -553,7 +558,7 @@ async function vistaHoy() {
     <div class="hoy-sup">
       <div class="frase-suave" title="${esc(frase.principio)} — ${esc(frase.practica)}">
         <span class="comillas">“</span>
-        <div><p>${esc(frase.texto)}</p><small>${esc(frase.principio)} · 💡 ${esc(frase.practica)}</small></div>
+        <div><p>${esc(frase.texto)}</p><small>${frase.ia ? '<span class="frase-ia" title="Frase de hoy generada con IA según tus pendientes">✨</span> ' : ''}${esc(frase.principio)} · 💡 ${esc(frase.practica)}</small></div>
         <button class="ico" data-otra-frase title="Otra frase">↻</button>
       </div>
       ${resumen}
@@ -566,6 +571,7 @@ async function vistaHoy() {
         <div class="captura-opciones">
           ${selectorCategoria(st.ultimaCategoria || 'General')}
           <select name="prioridad" title="Prioridad">${Object.keys(PRIORIDADES).map((p) => `<option ${p === 'B' ? 'selected' : ''}>${p}</option>`).join('')}</select>
+          ${st.ia.activa ? '<button type="button" class="ia-btn ico-ia" data-ia-interpretar title="Completar con IA: escribe la tarea como la dirías (fecha, prioridad, entregable…) y revisa el formulario antes de guardar">✨</button>' : ''}
           <button class="secundario">Agregar</button>
         </div>
       </form>
@@ -743,6 +749,7 @@ async function vistaRendimiento() {
   return `
     <div class="filtros">
       <select id="f-periodo">${[7, 14, 30, 90, 180, 365].map((d) => `<option value="${d}" ${st.periodo === d ? 'selected' : ''}>Últimos ${d} días</option>`).join('')}</select>
+      ${st.ia.activa ? '<button class="ia-btn" data-ia-analisis>✨ Analizar mi rendimiento</button>' : ''}
     </div>
     <div class="rejilla r2">
       <div class="tarjeta puntaje">
@@ -878,6 +885,7 @@ async function vistaSemana() {
       <button class="mini" data-semana-ir="${s.siguiente.anio}-${s.siguiente.semana}" title="Semana siguiente">›</button>
       ${s.es_actual ? '<span class="chip azul">semana actual</span>' : '<button class="mini" data-semana-ir="hoy">Esta semana</button>'}
       <div class="semana-rango"><b>Semana ${s.semana}</b> · del ${textoRangoSemana(s)}</div>
+      ${st.ia.activa ? '<button class="ia-btn" data-ia-resumen>✨ Redactar resumen</button>' : ''}
     </div>
 
     <div class="rejilla r4 semana-kpis">
@@ -971,6 +979,7 @@ function editorSubtareas(subs) {
   return `<div class="sub-editor">
     <div class="sub-filas">${subs.map(filaSubtarea).join('')}</div>
     <button type="button" class="mini" data-agregar-sub>+ Agregar subtarea</button>
+    ${st.ia.activa ? '<button type="button" class="ia-btn mini" data-ia-subtareas title="La IA propone los pasos a partir del título, la descripción y el entregable">✨ Sugerir pasos</button>' : ''}
     <span class="ayuda">Enter agrega otra · puedes pegar una lista (una por línea)</span>
   </div>`;
 }
@@ -994,6 +1003,11 @@ async function formTarea(t = {}) {
       No se copian los comentarios ni el historial (eventos, tiempo trabajado, fechas de inicio y completado); las subtareas quedan sin marcar.</p>` : ''}
     <form id="f-tarea" data-id="${t.id || ''}" ${dup ? `data-original="${dup.original.id}"` : ''}>
       ${dup ? `<input type="hidden" name="duplicada_de" value="${dup.duplicada_de}">` : ''}
+      ${t._ia ? `<p class="aviso-ia">✨ Completado con IA a partir de «${esc(recorte(t._ia, 140))}». Revisa los campos antes de guardar.</p>` : ''}
+      ${st.ia.activa && !t.id && !dup && !t._ia ? `<div class="ia-caja">
+        <textarea id="ia-texto-tarea" rows="2" maxlength="2000" placeholder="✨ Escríbela como la dirías: «revisar avance de hitos PHD el jueves en la mañana, prioridad A, entregable: informe a puntos focales»"></textarea>
+        <button type="button" class="ia-btn" data-ia-interpretar-form>Completar campos</button>
+      </div>` : ''}
       <label>Título<input name="titulo" required maxlength="200" value="${esc(t.titulo || '')}"></label>
       <label class="campo-entregable">📦 Entregable <span class="ayuda">¿Qué debe existir para dar esta tarea por terminada? Se agrega como la última subtarea.</span>
         <input name="entregable" maxlength="200" value="${esc(t.entregable || '')}" placeholder="Ej. Programa actualizado enviado a los puntos focales" autocomplete="off"></label>
@@ -1174,9 +1188,9 @@ function bloqueComentarios(t) {
     </li>`).join('');
   return `<h3 id="sec-comentarios" style="margin:18px 0 8px">Comentarios <small class="sutil">${t.comentarios.length || ''}</small></h3>
     ${t.comentarios.length ? `<ul class="comentarios">${lista}</ul>` : '<p class="sutil" style="margin:0 0 8px">Sin comentarios todavía.</p>'}
-    <form id="f-comentario" data-tarea="${t.id}" class="f-comentario">
+    <form id="f-comentario" data-tarea="${t.id}" class="f-comentario" data-ctx-tarea="${esc(t.titulo)}">
       <textarea name="texto" rows="2" maxlength="5000" placeholder="Escribe un comentario: avances, acuerdos, bloqueos… (Ctrl + Enter para guardar)"></textarea>
-      <button class="primario">Comentar</button>
+      <div class="coment-botones">${botonMejorar('comentario')}<button class="primario">Comentar</button></div>
     </form>`;
 }
 
@@ -1281,6 +1295,140 @@ document.addEventListener('keydown', (e) => {
   if (marca && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); clicSubtarea(marca); }
 });
 
+/* ─────────── asistente con IA (opcional: solo con OPENAI_API_KEY en .env) ─────────── */
+const botonMejorar = (tipo) => (st.ia.activa
+  ? `<button type="button" class="ia-btn mini" data-ia-mejorar="${tipo}" title="Corrige ortografía y redacción sin cambiar el contenido">✨ Mejorar redacción</button>
+     <button type="button" class="mini oculto" data-ia-deshacer title="Volver a tu texto">↶ Original</button>`
+  : '');
+
+/** Pone el botón en «Pensando…» mientras la IA responde. */
+async function conIA(boton, fn) {
+  const antes = boton.innerHTML;
+  boton.disabled = true;
+  boton.classList.add('pensando');
+  boton.innerHTML = '<span class="giro"></span>' + (boton.classList.contains('ico-ia') ? '' : ' Pensando…');
+  try { return await fn(); } finally {
+    if (boton.isConnected) { boton.disabled = false; boton.classList.remove('pensando'); boton.innerHTML = antes; }
+  }
+}
+
+function ventanaIA(html) {
+  abrirModal(`<div class="ia-ventana">${html}</div>`, { enfocar: false });
+  $('#modal').classList.add('opaco');
+}
+function cargandoIA(titulo, detalle = 'Revisando tus datos…') {
+  st.iaRegenerar = null;
+  ventanaIA(`<h2>✨ ${esc(titulo)}</h2><div class="ia-cargando"><span class="giro grande"></span><span>${esc(detalle)}</span></div>`);
+}
+function errorIA(err, reintentar) {
+  st.iaRegenerar = reintentar;
+  ventanaIA(`<h2>✨ No se pudo completar</h2><p class="ia-error">${esc(err.message)}</p>
+    <div class="botones"><button type="button" class="secundario" data-cerrar>Cerrar</button>
+    ${reintentar ? '<button type="button" class="primario" data-ia-regenerar>Reintentar</button>' : ''}</div>`);
+}
+function resultadoTextoIA(titulo, texto, regenerar) {
+  st.iaRegenerar = regenerar;
+  ventanaIA(`<h2>✨ ${esc(titulo)}</h2>
+    <textarea class="ia-texto" rows="18" spellcheck="true">${esc(texto)}</textarea>
+    <div class="botones">
+      <span class="ayuda" style="margin-right:auto">Generado con IA a partir de tus datos · revísalo y edítalo aquí antes de usarlo.</span>
+      <button type="button" class="secundario" data-ia-regenerar>↻ Otra versión</button>
+      <button type="button" class="secundario" data-cerrar>Cerrar</button>
+      <button type="button" class="primario" data-ia-copiar=".ia-texto">📋 Copiar</button>
+    </div>`);
+}
+async function copiarTexto(texto, msg = '📋 Copiado') {
+  try { await navigator.clipboard.writeText(texto); toast(msg, 'exito'); } catch { toast('El navegador no permitió copiar: selecciona el texto y usa Ctrl + C.', 'error'); }
+}
+
+async function iaResumenSemanal() {
+  cargandoIA(`Resumen de la semana ${st.hist.semana}`, 'Leyendo lo que hiciste cada día…');
+  try {
+    const r = await api('/api/ia/resumen-semanal', { method: 'POST', body: { anio: st.hist.anio, semana: st.hist.semana } });
+    resultadoTextoIA(`Resumen de la semana ${st.hist.semana}`, r.texto, iaResumenSemanal);
+  } catch (err) { errorIA(err, iaResumenSemanal); }
+}
+
+async function iaAnalisis() {
+  const dias = st.periodo;
+  cargandoIA(`Análisis de rendimiento · últimos ${dias} días`, 'Buscando patrones en tus métricas…');
+  try {
+    const r = await api('/api/ia/analisis-rendimiento', { method: 'POST', body: { dias } });
+    resultadoTextoIA(`Análisis de rendimiento · últimos ${dias} días`, r.texto, iaAnalisis);
+  } catch (err) { errorIA(err, iaAnalisis); }
+}
+
+async function iaPlanDia() {
+  cargandoIA('Plan para hoy', 'Ordenando tus pendientes: primero la rana…');
+  try {
+    const [r] = await Promise.all([api('/api/ia/plan-dia', { method: 'POST' }), cargarTareas()]);
+    const items = r.orden.map((o) => ({ o, t: st.tareas.find((x) => x.id === o.id) })).filter((x) => x.t);
+    const total = items.reduce((a, x) => a + x.o.minutos, 0);
+    st.iaRegenerar = iaPlanDia;
+    ventanaIA(`<h2>✨ Plan para hoy</h2>
+      <p class="plan-resumen">${esc(r.resumen)}</p>
+      ${items.length ? `<ol class="plan-dia">${items.map(({ o, t }, i) => `<li>
+          <span class="plan-num">${i + 1}</span>
+          <div class="plan-info">
+            <div>${enlaceTarea(t)}${t.es_rana ? ' 🐸' : ''}${t.vencida ? ' <span class="chip rojo">vencida</span>' : ''}</div>
+            <small>${esc(o.motivo)}</small>
+          </div>
+          <span class="chip">${fmtMin(o.minutos)}</span>
+          ${abierta(t) && !t.bloqueada ? accionPrincipal(t, false) : ''}
+        </li>`).join('')}</ol>
+        <p class="sutil plan-total">Total sugerido: <b>${fmtMin(total)}</b></p>` : '<p class="sutil">No se sugirieron tareas para hoy.</p>'}
+      ${r.advertencias ? `<div class="plan-aviso">⚠ ${esc(r.advertencias)}</div>` : ''}
+      <div class="botones">
+        <span class="ayuda" style="margin-right:auto">Sugerencia de la IA · tú decides. ▶ inicia la tarea.</span>
+        <button type="button" class="secundario" data-ia-regenerar>↻ Otra versión</button>
+        <button type="button" class="primario" data-cerrar>Listo</button>
+      </div>`);
+  } catch (err) { errorIA(err, iaPlanDia); }
+}
+
+async function cargarFraseIA() {
+  try {
+    const fr = await api('/api/ia/frase');
+    st.fraseIA = { ...fr, dia: hoyISO() };
+    const caja = $('#vista .frase-suave');
+    if (!caja) return;
+    caja.querySelector('p').textContent = fr.texto;
+    caja.querySelector('small').innerHTML = `<span class="frase-ia" title="Frase de hoy generada con IA según tus pendientes">✨</span> ${esc(fr.principio)} · 💡 ${esc(fr.practica)}`;
+    caja.title = `${fr.principio} — ${fr.practica}`;
+  } catch (err) {
+    console.warn('Frase con IA no disponible:', err.message);  // se queda la frase local
+  }
+}
+
+/** Datos que devuelve la IA → campos del formulario de tarea abierto. */
+function agregarSubtareasForm(lista) {
+  const ya = new Set($$('#f-tarea .sub-input').map((i) => i.value.trim().toLowerCase()).filter(Boolean));
+  $$('#f-tarea .sub-fila').forEach((r) => { if (!r.dataset.subId && !$('.sub-input', r).value.trim()) r.remove(); });
+  let n = 0;
+  lista.forEach((titulo) => { if (!ya.has(titulo.toLowerCase())) { agregarFilaSub(null, titulo); ya.add(titulo.toLowerCase()); n++; } });
+  return n;
+}
+function llenarFormTarea(f, r) {
+  const poner = (campo, v) => { if (v && f[campo]) f[campo].value = v; };
+  poner('titulo', r.titulo); poner('descripcion', r.descripcion); poner('prioridad', r.prioridad);
+  poner('fecha_limite', r.fecha_limite); poner('entregable', r.entregable);
+  if (r.estimado_min) f.estimado_min.value = r.estimado_min;
+  if (r.categoria) {
+    const sel = f.categoria;
+    let op = [...sel.options].find((o) => o.value.toLowerCase() === r.categoria.toLowerCase());
+    if (!op) { op = new Option(r.categoria, r.categoria); sel.insertBefore(op, sel.lastElementChild); }
+    sel.value = op.value;
+    f.categoria_nueva.classList.add('oculto');
+  }
+  if (r.es_rana) f.es_rana.checked = true;
+  agregarSubtareasForm(r.subtareas || []);
+}
+const datosDesdeIA = (r, texto) => ({
+  titulo: r.titulo, descripcion: r.descripcion, prioridad: r.prioridad, categoria: r.categoria,
+  fecha_limite: r.fecha_limite, estimado_min: r.estimado_min || null, entregable: r.entregable, es_rana: r.es_rana,
+  subtareas: (r.subtareas || []).map((titulo) => ({ titulo })), _ia: texto,
+});
+
 /* ─────────── al pausar: ¿qué hiciste en ese tiempo? (opcional) ─────────── */
 function pedirNotaSesion(t, ses, volverA = null) {
   const hora = (iso) => (iso || '').slice(11, 16);
@@ -1291,11 +1439,12 @@ function pedirNotaSesion(t, ses, volverA = null) {
         <p>«${esc(t.titulo)}»${ses.subtarea ? ` <span class="sutil">›</span> «${esc(ses.subtarea)}»` : ''}</p></div>
       <div class="nota-dur"><b>${fmtMin(ses.minutos)}</b><span>${hora(ses.inicio)} – ${hora(ses.fin)}</span></div>
     </div>
-    <form id="f-nota-sesion" data-sesion="${ses.id}" data-volver="${volverA || ''}">
+    <form id="f-nota-sesion" data-sesion="${ses.id}" data-volver="${volverA || ''}" data-ctx-tarea="${esc(t.titulo)}" data-ctx-sub="${esc(ses.subtarea || '')}">
       <label>¿Qué hiciste en este tiempo? <span class="ayuda">Opcional. Queda en el reporte semanal y en el historial de la tarea.</span>
         <textarea name="nota" rows="4" maxlength="2000" placeholder="Ej. Descargué el corte del lunes y validé las fechas de U108 y U109"></textarea></label>
       <div class="botones">
         <span class="ayuda" style="margin-right:auto">Ctrl + Enter guarda · Esc omite</span>
+        ${botonMejorar('nota')}
         <button type="button" class="secundario" data-omitir-nota>Omitir</button>
         <button class="primario">Guardar</button>
       </div>
@@ -1508,6 +1657,7 @@ document.addEventListener('click', async (e) => {
   try {
     if (d.vista) { $('#panel-alertas').classList.add('oculto'); st.vista = d.vista; render(); return; }
     if (d.cerrar !== undefined) return cerrarModal();
+    if ((d.accion || d.subAccion) && el.closest('.plan-dia')) cerrarModal();
     if (d.accion) return accionTarea(Number(d.id), d.accion);
     if (d.detalle) { e.preventDefault(); $('#panel-alertas').classList.add('oculto'); return verDetalle(Number(d.detalle), d.irSoporte !== undefined ? 'soporte' : d.irComentarios !== undefined); }
     if (d.editar) {
@@ -1519,6 +1669,58 @@ document.addEventListener('click', async (e) => {
       if (!confirm('¿Eliminar la tarea? Su historial se conserva para tus estadísticas.')) return;
       await api(`/api/tareas/${d.eliminar}`, { method: 'DELETE' });
       toast('Tarea eliminada'); return refrescar();
+    }
+    if (d.iaPlan !== undefined) return iaPlanDia();
+    if (d.iaAnalisis !== undefined) return iaAnalisis();
+    if (d.iaResumen !== undefined) return iaResumenSemanal();
+    if (d.iaRegenerar !== undefined) return st.iaRegenerar && st.iaRegenerar();
+    if (d.iaCopiar) return copiarTexto(el.closest('.ia-ventana, .rpt-correo').querySelector(d.iaCopiar).value, d.iaMsg || '📋 Copiado');
+    if (d.iaInterpretar !== undefined) {
+      const inp = $('#f-rapida input[name=titulo]');
+      const texto = inp.value.trim();
+      if (!texto) { toast('Escribe la tarea como la dirías y luego pulsa ✨', 'error'); inp.focus(); return; }
+      const r = await conIA(el, () => api('/api/ia/interpretar-tarea', { method: 'POST', body: { texto } }));
+      inp.value = '';
+      return formTarea(datosDesdeIA(r, texto));
+    }
+    if (d.iaInterpretarForm !== undefined) {
+      const texto = $('#ia-texto-tarea').value.trim();
+      if (!texto) { toast('Escribe la tarea como la dirías', 'error'); $('#ia-texto-tarea').focus(); return; }
+      const r = await conIA(el, () => api('/api/ia/interpretar-tarea', { method: 'POST', body: { texto } }));
+      llenarFormTarea($('#f-tarea'), r);
+      toast('✨ Campos completados: revísalos antes de guardar', 'exito');
+      return;
+    }
+    if (d.iaSubtareas !== undefined) {
+      const f = $('#f-tarea');
+      if (!f.titulo.value.trim()) { toast('Escribe primero el título de la tarea', 'error'); f.titulo.focus(); return; }
+      const cat = f.categoria.value === '__nueva__' ? f.categoria_nueva.value : f.categoria.value;
+      const r = await conIA(el, () => api('/api/ia/sugerir-subtareas', { method: 'POST', body: {
+        titulo: f.titulo.value, descripcion: f.descripcion.value, categoria: cat, entregable: f.entregable.value,
+        existentes: $$('.sub-input', f).map((i) => i.value.trim()).filter(Boolean) } }));
+      const n = agregarSubtareasForm(r.subtareas);
+      toast(n ? `✨ ${n} paso(s) sugerido(s): quita los que no apliquen` : 'No hubo pasos nuevos que sugerir', n ? 'exito' : '');
+      return;
+    }
+    if (d.iaMejorar) {
+      const f = el.closest('form');
+      const area = $('textarea', f);
+      const texto = area.value.trim();
+      if (!texto) { toast('Escribe algo primero y luego mejora la redacción', 'error'); area.focus(); return; }
+      const r = await conIA(el, () => api('/api/ia/mejorar-texto', { method: 'POST', body: {
+        texto, tipo: d.iaMejorar, tarea: f.dataset.ctxTarea, subtarea: f.dataset.ctxSub } }));
+      const deshacer = $('[data-ia-deshacer]', f);
+      deshacer.dataset.original = area.value;
+      deshacer.classList.remove('oculto');
+      area.value = r.texto;
+      area.focus();
+      return;
+    }
+    if (d.iaDeshacer !== undefined) {
+      const area = $('textarea', el.closest('form'));
+      area.value = d.original || area.value;
+      el.classList.add('oculto');
+      return;
     }
     if (d.otraFrase !== undefined) {
       const fr = await api('/api/frase?aleatoria=1');
@@ -1893,10 +2095,12 @@ $('#btn-notif').addEventListener('click', async () => {
 });
 
 /* ─────────── arranque ─────────── */
-(function iniciar() {
+(async function iniciar() {
   try { JSON.parse(sessionStorage.getItem('mifoco-notificadas') || '[]').forEach((k) => st.notificadas.add(k)); } catch { /* nada */ }
   $('#fecha-hoy').textContent = new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   pintarBotonNotif();
+  try { st.ia = await api('/api/ia/estado'); } catch { st.ia = { activa: false }; }
+  document.body.classList.toggle('ia-activa', !!st.ia.activa);
   refrescar();
   setInterval(revisarAlertas, 60000);
   // Refresca la vista "Hoy" cada 5 min para mantener al día vencimientos y contadores.

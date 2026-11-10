@@ -724,3 +724,51 @@ html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
 .timeline li.ev-trabajo::before { border-color: var(--acento); background: var(--acento-suave); }
 .nota-dia { flex-basis: 100%; padding: 3px 0 3px 27px; font-size: .84rem; color: var(--texto); }
 .nota-hora { display: inline-block; font-size: .72rem; color: var(--sutil); margin-right: 8px; font-variant-numeric: tabular-nums; }
+
+/* ───────── Asistente con IA (opcional) ───────── */
+.ia-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid color-mix(in srgb, var(--acento) 35%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--acento) 14%, var(--superficie)), color-mix(in srgb, #a855f7 12%, var(--superficie)));
+  color: var(--acento); font-weight: 600; border-radius: 10px; padding: 7px 12px; cursor: pointer; white-space: nowrap; }
+.ia-btn:hover:not(:disabled) { border-color: var(--acento); box-shadow: 0 2px 10px color-mix(in srgb, var(--acento) 22%, transparent); }
+.ia-btn:disabled { cursor: progress; opacity: .85; }
+.ia-btn.mini { padding: 4px 9px; font-size: .8rem; }
+.ia-btn.ico-ia { padding: 6px 10px; }
+.giro { width: 13px; height: 13px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent;
+  display: inline-block; animation: girar .7s linear infinite; flex: none; }
+.giro.grande { width: 22px; height: 22px; border-width: 3px; color: var(--acento); }
+@keyframes girar { to { transform: rotate(360deg); } }
+.modal.opaco .modal-caja:has(.ia-ventana) { width: min(720px, 100%); }
+.ia-cargando { display: flex; align-items: center; gap: 12px; padding: 28px 4px; color: var(--sutil); }
+.ia-error { color: var(--peligro); line-height: 1.5; }
+.ia-texto { width: 100%; min-height: 320px; font-size: .93rem; line-height: 1.55; resize: vertical; }
+.ia-caja { display: flex; gap: 8px; align-items: stretch; padding: 10px; margin-bottom: 14px; border-radius: 12px;
+  border: 1px dashed color-mix(in srgb, var(--acento) 45%, transparent); background: color-mix(in srgb, var(--acento) 5%, transparent); }
+.ia-caja textarea { flex: 1; resize: vertical; min-height: 44px; margin: 0; }
+.aviso-ia { margin: 0 0 14px; padding: 9px 12px; border-radius: 10px; font-size: .86rem;
+  background: color-mix(in srgb, var(--acento) 9%, transparent); color: var(--texto); }
+.frase-ia { cursor: help; }
+.resumen-ia { padding-left: 10px !important; }
+.resumen-ia .ia-btn { font-size: .8rem; padding: 6px 10px; }
+.semana-filtros .ia-btn { margin-left: auto; }
+.coment-botones { display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+.sub-editor .ia-btn { margin-left: 4px; }
+/* plan del día */
+.plan-resumen { margin: 0 0 14px; line-height: 1.5; }
+.plan-dia { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.plan-dia li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--borde); border-radius: 12px; background: var(--superficie); }
+.plan-num { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex: none; font-weight: 700; font-size: .85rem;
+  background: var(--acento-suave); color: var(--acento); }
+.plan-info { flex: 1; min-width: 0; }
+.plan-info small { display: block; color: var(--sutil); margin-top: 2px; }
+.plan-total { margin: 10px 0 0; text-align: right; }
+.plan-aviso { margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: .88rem; line-height: 1.45;
+  background: color-mix(in srgb, #f59e0b 14%, transparent); border: 1px solid color-mix(in srgb, #f59e0b 40%, transparent); }
+/* correo del reporte */
+.rpt-correo { margin-top: 14px; padding: 14px; border-radius: 12px; border: 1px solid var(--borde); background: var(--fondo); }
+.rpt-correo h3 { margin: 0 0 10px; }
+.rpt-correo textarea { width: 100%; resize: vertical; line-height: 1.5; }
+.fila-copiar { display: flex; gap: 6px; }
+.fila-copiar input { flex: 1; }
+@media (max-width: 640px) { .ia-caja { flex-direction: column; } .plan-dia li { flex-wrap: wrap; } }
+.plan-info a { color: var(--texto); font-weight: 600; text-decoration: none; margin-left: 6px; }
+.plan-info a:hover { color: var(--acento); text-decoration: underline; }

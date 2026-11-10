@@ -285,6 +285,7 @@ python3 -m venv .venv
 | **Novedades (●)** | Para lo que no puedes terminar por algo ajeno, pero en lo que ya invertiste tiempo. **Subtareas:** la casilla tiene 3 estados que se recorren con clics: vacía → ✓ completada → **● con novedad** (pide describirla) → vacía; un doble clic rápido pasa directo a ●. **Tareas:** botón **● Novedad** en la barra de acciones o en el detalle, con *Editar* y *Resuelta*. El tiempo dedicado se conserva (si estaba corriendo se pausa), queda en el historial y se resuelve sola al completar. Aparece en la tarjeta, en Hoy, en el **reporte de cumplimiento** (estado *Con novedad* y franja roja con la descripción) y en el **reporte semanal** (sección *● Novedades* de cada día). |
 | **Cronómetro** | Cada *Iniciar → Pausar/Completar* crea una sesión de trabajo. **Una cosa a la vez**: al iniciar otra tarea o subtarea, la anterior se pausa sola. Si la tarea tiene **subtareas pendientes, el tiempo se inicia desde cada subtarea** (▶ / ⏸ junto a ella; la tarjeta ofrece ▶ con la siguiente pendiente) y cada subtarea muestra su tiempo; la tarea **totaliza** la suma. Completar una subtarea en curso cierra su sesión. Si completas sin cronometrar, te pregunta cuántos minutos le dedicaste. |
 | **¿Qué hiciste?** | Al pulsar **⏸ Pausar** (en una tarea o en una subtarea) se abre una ventana con el fondo oscurecido que muestra cuánto duró esa sesión y pregunta *¿Qué hiciste en este tiempo?*. Es **opcional**: *Guardar* (o Ctrl + Enter) la asocia a esa sesión; *Omitir* (o Esc) la deja sin descripción. Lo escrito aparece en **Historial › Semana**, bajo *⏱ Tiempo trabajado* de ese día con la hora de la sesión, y en el historial de la tarea como *Trabajo realizado 📝*. |
+| **Asistente con IA ✨** | Opcional, con tu clave de OpenAI en un archivo `.env`. Agrega: frase del día según tus pendientes, *Planear mi día*, crear tareas escribiéndolas como las dirías, *Sugerir pasos*, *Mejorar redacción* de notas y comentarios, resumen semanal redactado, correo para el reporte de cumplimiento y análisis de rendimiento. Ver [Asistente con IA](#asistente-con-ia-opcional). |
 | **Metas de aprendizaje** | Herramienta, nivel actual → objetivo (1‑5), horas objetivo, fecha, hitos con checklist y registro de práctica. El progreso combina horas y hitos; calcula el **ritmo semanal necesario**. Las horas de tareas vinculadas también suman. |
 | **Rendimiento** | Puntaje 0‑100, entregas a tiempo, atraso promedio, ciclo promedio, real vs. estimado, racha, foco en lo vital (80/20), reprogramaciones, gráficos diarios y por prioridad/categoría (7 a 365 días). |
 | **Historial** | Dos pestañas. *📅 Reporte semanal*: eliges el número de semana (ISO, p. ej. 46) y el año, o navegas con ‹ ›; muestra de qué día a qué día va (lunes a domingo), los **festivos de Colombia** y, **día por día**, las tareas completadas (a tiempo o con atraso), subtareas completadas, tiempo trabajado por tarea, comentarios y práctica de aprendizaje, con un resumen de la semana (días hábiles, completadas por día hábil). *📜 Bitácora de eventos*: el registro de todo lo que le pasó a cada tarea. |
@@ -293,6 +294,66 @@ python3 -m venv .venv
 **Modo claro / oscuro:** botón ☀/🌙 en la barra superior; se recuerda en tu navegador y, si nunca lo usas, sigue el modo de Windows.
 
 Atajo: tecla **N** abre "Nueva tarea" (en Metas, "Nueva meta"). Reportes, exportaciones, categorías, notificaciones y respaldo están en el menú **⚙ Herramientas**, abajo en la barra lateral.
+
+## Asistente con IA (opcional)
+
+Mi Foco puede usar la API de OpenAI para redactar y analizar a partir de tus propios datos. **Sin clave, la app funciona
+igual** y los botones ✨ no aparecen.
+
+### Activarlo
+
+1. Crea una clave en [platform.openai.com/api-keys](https://platform.openai.com/api-keys). La API se paga por uso,
+   aparte de ChatGPT Plus, así que tu cuenta necesita saldo o un método de pago.
+2. En PowerShell, dentro de la carpeta del proyecto, crea tu `.env` a partir de la plantilla y ábrelo:
+   ```powershell
+   cd C:\Gary\mi_foco
+   Copy-Item .env.example .env
+   notepad .env
+   ```
+3. Reemplaza `sk-...` por tu clave en la línea `OPENAI_API_KEY=` y guarda.
+4. Reinicia Mi Foco (`restartmifoco`) y recarga el navegador. Aparecen los botones ✨.
+
+El `.env` está en `.gitignore`: **tu clave nunca se sube a GitHub**, y la usa solo el servidor local (no llega al navegador).
+Opciones del `.env` (todas opcionales salvo la clave):
+
+| Variable | Para qué |
+|---|---|
+| `OPENAI_API_KEY` | Activa el asistente. |
+| `OPENAI_MODEL` | Modelo a usar. Por defecto `gpt-5-mini` (rápido y económico). |
+| `OPENAI_REASONING_EFFORT` | `minimal`, `low` (por defecto), `medium` o `high`. Más alto = más pensado, pero más lento y costoso. Vacío si tu modelo no lo admite (Mi Foco también lo detecta y reintenta sin él). |
+| `MIFOCO_CONTEXTO` | Una o dos frases sobre tu trabajo, para que la IA use tus términos (p. ej. tu área y las herramientas que usas). |
+| `MIFOCO_FIN_JORNADA` | Hora en que termina tu jornada, para *Planear mi día* (por defecto `17:00`). |
+
+### Qué hace y dónde está
+
+| Dónde | Botón | Qué hace |
+|---|---|---|
+| **Hoy** · frase | (automático) | La frase del día al estilo Brian Tracy se escribe según tu situación (pendientes, vencidas, tu rana). Se genera una vez al día y se guarda; lleva un ✨. El botón ↻ sigue mostrando frases de la lista local. |
+| **Hoy** · resumen | ✨ Planear mi día | Ordena tus pendientes para hoy con el método de la rana: primero la tarea A más importante, sube lo vencido, considera lo que cabe hasta el fin de tu jornada y tu relación real/estimado. Cada tarea trae el motivo, los minutos sugeridos y ▶ para empezarla. |
+| **Hoy** · captura rápida | ✨ | Escribe la tarea como la dirías (*«revisar avance de hitos PHD el jueves 9 am, prioridad A, entregable informe»*) y pulsa ✨: se abre el formulario con título, fecha, prioridad, categoría, entregable y subtareas llenos para que lo revises antes de guardar. |
+| **Nueva tarea** | Completar campos | Lo mismo, desde un cuadro al inicio del formulario. |
+| **Nueva/editar tarea** · subtareas | ✨ Sugerir pasos | Propone de 3 a 7 pasos a partir del título, la descripción y el entregable. No repite los que ya tienes; quita los que no apliquen. |
+| **Al pausar** y **comentarios** | ✨ Mejorar redacción | Corrige ortografía y redacción sin agregar información y conserva códigos y siglas (U108, STO…). *↶ Original* devuelve tu texto. |
+| **Historial › Reporte semanal** | ✨ Redactar resumen | Escribe el resumen de la semana elegida (logros, en curso, novedades, próxima semana) usando lo que anotaste al pausar. Puedes editarlo y copiarlo. |
+| **Reporte de cumplimiento** | ✨ Redactar correo | Escribe el asunto y el texto del correo que acompaña la imagen del reporte, destacando lo vencido o con novedad. *Abrir en el correo* lo pasa a tu programa de correo. |
+| **Rendimiento** | ✨ Analizar mi rendimiento | Diagnóstico del periodo elegido: lo que va bien, patrones a mejorar (con la cifra que los muestra) y tres acciones para las próximas dos semanas. |
+
+Todo lo que genera la IA es una **propuesta**: nada se guarda sin que lo revises y confirmes.
+
+### Privacidad y costo
+
+- Al usar un botón ✨ se envía a OpenAI **solo lo necesario para esa función**: títulos, fechas, estados, notas,
+  comentarios y novedades de las tareas involucradas. Nunca se envían archivos adjuntos ni la base de datos completa.
+- Si tus tareas tienen información de tu empresa, confirma que su política permita enviarla a un servicio externo.
+- Cada botón hace una sola consulta (la frase, una al día). Con `gpt-5-mini`, el uso normal de un día cuesta muy poco;
+  revisa precios y consumo en [platform.openai.com/usage](https://platform.openai.com/usage).
+
+### Si algo falla
+
+El mensaje en pantalla dice la causa: clave inválida (revisa `.env` y reinicia), límite de uso o falta de saldo (429),
+modelo no disponible para tu cuenta (cambia `OPENAI_MODEL`) o sin conexión. Si los botones ✨ no aparecen, revisa que
+el archivo se llame exactamente `.env` (no `.env.txt`; en el Explorador activa *Ver › Extensiones de nombre de archivo*),
+que esté junto a `app.py` y que reiniciaste Mi Foco.
 
 ## Cómo se calculan las métricas
 
@@ -339,6 +400,11 @@ POST            /api/tareas/<id>/comentarios   PUT/DELETE /api/comentarios/<id>
 GET             /api/semana?anio=2026&semana=46   POST /api/festivos/<año>/actualizar
 GET             /api/tareas/<id>/duplicado   (datos para precargar la copia; se crea con POST /api/tareas + duplicada_de)
 POST            /api/respaldo
+PUT             /api/sesiones/<id>   {"nota": "lo que hice en esa sesión"}
+GET             /api/ia/estado   /api/ia/frase
+POST            /api/ia/plan-dia   /api/ia/interpretar-tarea {texto}   /api/ia/sugerir-subtareas {titulo, …}
+POST            /api/ia/mejorar-texto {texto, tipo}   /api/ia/resumen-semanal {anio, semana}
+POST            /api/ia/correo-reporte {desde, hasta, …}   /api/ia/analisis-rendimiento {dias}
 ```
 
 ## Estructura
@@ -349,6 +415,8 @@ mi_foco/
 ├── db.py           esquema SQLite, conexión y respaldos
 ├── festivos.py     festivos de Colombia (API Nager.Date + cálculo local de respaldo)
 ├── frases.py       frases originales inspiradas en los principios de gestión del tiempo de Brian Tracy
+├── ia.py           asistente con IA (OpenAI), opcional
+├── .env.example    plantilla del .env (tu .env con la clave no se sube)
 ├── static/         index.html · style.css · app.js · reporte.js (imagen del reporte)
 ├── iniciar.bat · iniciar_oculto.vbs · iniciar.sh
 └── data/           (se crea solo) base de datos y respaldos
