@@ -22,14 +22,26 @@
   --radio: 14px;
   --fuente: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
 }
+/* Modo oscuro: elegido con el botón ☀/🌙 (data-theme) o, si no se ha elegido, según el sistema */
+:root[data-theme="dark"] {
+  --fondo: #12131a; --superficie: #1b1d27; --superficie-2: #22242f; --borde: #2f3240;
+  --texto: #e8e9f0; --sutil: #9a9db0; --acento: #8b84ff; --acento-suave: #2a2850;
+  --exito-suave: #13301f; --aviso-suave: #36290f; --peligro-suave: #3a1717; --info-suave: #0f2a3a;
+  --sombra: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+  color-scheme: dark;
+}
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --fondo: #12131a; --superficie: #1b1d27; --superficie-2: #22242f; --borde: #2f3240;
     --texto: #e8e9f0; --sutil: #9a9db0; --acento: #8b84ff; --acento-suave: #2a2850;
     --exito-suave: #13301f; --aviso-suave: #36290f; --peligro-suave: #3a1717; --info-suave: #0f2a3a;
     --sombra: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+    color-scheme: dark;
   }
 }
+:root[data-theme="light"] { color-scheme: light; }
+/* Transición suave solo mientras se cambia de tema */
+html.cambiando-tema, html.cambiando-tema * { transition: background-color .3s ease, border-color .3s ease, color .2s ease !important; }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -343,14 +355,16 @@ body.modo-pantalla #vista { flex: 1; min-height: 0; }
 
 /* Frase: una línea serena, sin colores fuertes */
 .hoy-sup { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: stretch; }
-.frase-suave { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px 12px 16px; border-radius: var(--radio);
-  background: color-mix(in srgb, var(--acento) 5%, var(--superficie)); border: 1px solid color-mix(in srgb, var(--acento) 14%, var(--borde)); }
-.frase-suave .comillas { font: 700 2.4rem/1 Georgia, serif; color: color-mix(in srgb, var(--acento) 45%, transparent); margin-top: -2px; }
-.frase-suave > div { flex: 1; min-width: 0; }
-.frase-suave p { margin: 0; font-size: 1.02rem; font-weight: 500; font-style: italic; color: var(--texto); }
-.frase-suave small { display: block; margin-top: 3px; color: var(--sutil); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.frase-suave .ico { opacity: .55; }
-.frase-suave:hover .ico { opacity: 1; }
+.frase-suave { position: relative; overflow: hidden; display: flex; align-items: flex-start; gap: 12px; padding: 13px 14px 13px 18px; border-radius: var(--radio);
+  background: linear-gradient(135deg, #4f46e5, #7c3aed); color: #fff; border: 0; box-shadow: 0 6px 18px rgba(79, 70, 229, .25); }
+.frase-suave::after { content: "“"; position: absolute; right: 46px; top: -30px; font: 700 7.5rem/1 Georgia, serif; opacity: .12; pointer-events: none; }
+.frase-suave .comillas { font: 700 2.4rem/1 Georgia, serif; color: rgba(255, 255, 255, .55); margin-top: -2px; }
+.frase-suave > div { flex: 1; min-width: 0; position: relative; z-index: 1; }
+.frase-suave p { margin: 0; font-size: 1.05rem; font-weight: 600; font-style: normal; color: #fff; line-height: 1.35; }
+.frase-suave small { display: block; margin-top: 4px; color: rgba(255, 255, 255, .82); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.frase-suave .ico { position: relative; z-index: 1; color: #fff; background: rgba(255, 255, 255, .16); opacity: .9; }
+.frase-suave .ico:hover { background: rgba(255, 255, 255, .28); opacity: 1; color: #fff; }
+:root[data-theme="dark"] .frase-suave { box-shadow: none; }
 
 /* Resumen del día: números discretos en una sola franja */
 .resumen-hoy { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-radius: var(--radio); background: var(--superficie); border: 1px solid var(--borde); }
@@ -653,3 +667,10 @@ ul.adjuntos .ico { text-decoration: none; }
   .mini-avance { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .t-detalle, .chevron, .t-detalle-cont { transition: none; } }
+
+/* Botón de modo claro / oscuro */
+.btn-tema { position: relative; overflow: hidden; }
+.btn-tema .sol, .btn-tema .luna { position: absolute; inset: 0; display: grid; place-items: center; transition: transform .35s cubic-bezier(.2,.8,.2,1), opacity .25s; }
+.btn-tema .luna { transform: translateY(120%) rotate(-40deg); opacity: 0; }
+html.tema-oscuro .btn-tema .sol { transform: translateY(-120%) rotate(40deg); opacity: 0; }
+html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }

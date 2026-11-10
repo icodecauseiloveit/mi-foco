@@ -5,6 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Mi Foco · Tareas y metas</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='none' stroke='%234f46e5' stroke-width='4'/><circle cx='16' cy='16' r='5' fill='%234f46e5'/></svg>">
+  <script>
+    // Aplica el tema guardado antes de dibujar la página (sin parpadeo).
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('mifoco-tema'); } catch (e) { /* sin almacenamiento */ }
+      if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+      var oscuro = t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.classList.toggle('tema-oscuro', oscuro);
+    })();
+  </script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -48,6 +58,7 @@
       </div>
       <div class="topbar-acciones">
         <div id="en-curso" class="en-curso oculto"></div>
+        <button id="btn-tema" class="btn-icono btn-tema" title="Cambiar a modo oscuro" aria-label="Cambiar modo claro u oscuro"><span class="sol">☀️</span><span class="luna">🌙</span></button>
         <button id="btn-alertas" class="btn-icono" title="Alertas">🔔<span id="badge-alertas" class="badge oculto">0</span></button>
         <button id="btn-nueva" class="primario">+ Nueva tarea</button>
       </div>

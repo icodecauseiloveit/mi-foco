@@ -1636,6 +1636,29 @@ document.addEventListener('keydown', (e) => {
 });
 $('#btn-nueva').addEventListener('click', () => formTarea());
 
+/* Modo claro / oscuro. Se recuerda en este navegador; sin elección, sigue al sistema. */
+const esOscuro = () => document.documentElement.classList.contains('tema-oscuro');
+function pintarBotonTema() {
+  $('#btn-tema').title = esOscuro() ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro';
+}
+$('#btn-tema').addEventListener('click', () => {
+  const nuevo = esOscuro() ? 'light' : 'dark';
+  const raiz = document.documentElement;
+  raiz.classList.add('cambiando-tema');
+  raiz.setAttribute('data-theme', nuevo);
+  raiz.classList.toggle('tema-oscuro', nuevo === 'dark');
+  try { localStorage.setItem('mifoco-tema', nuevo); } catch { /* sin almacenamiento */ }
+  pintarBotonTema();
+  setTimeout(() => raiz.classList.remove('cambiando-tema'), 400);
+});
+// Si nunca se eligió un tema, seguir los cambios del sistema.
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+  if (document.documentElement.hasAttribute('data-theme')) return;
+  document.documentElement.classList.toggle('tema-oscuro', e.matches);
+  pintarBotonTema();
+});
+pintarBotonTema();
+
 /* Desplegar / contraer tareas: clic en la flecha o en cualquier parte libre de la fila. */
 document.addEventListener('click', (e) => {
   const fila = e.target.closest('[data-toggle-tarea]');
