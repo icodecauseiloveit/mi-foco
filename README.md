@@ -38,14 +38,26 @@ volver a arrancarlo**. La función de PowerShell `restartmifoco` hace las tres c
 2. Hace `git pull`, muestra los cambios que llegaron y, si cambió `requirements.txt`, reinstala dependencias.
 3. Arranca Mi Foco **oculto** y confirma que quedó corriendo en `http://127.0.0.1:5050`.
 
-**Instalarla (una sola vez).** Abre tu perfil de PowerShell (sirve para PowerShell, Terminal y VS Code):
+**Instalarla (una sola vez).**
+
+*Paso 1 — permitir que PowerShell cargue tu perfil.* Windows trae deshabilitada la ejecución de scripts, y sin esto
+aparece el error *"no se puede cargar el archivo …\profile.ps1 porque la ejecución de scripts está deshabilitada"*.
+Este comando la habilita **solo para tu usuario** y no requiere administrador (responde **S** si pide confirmación):
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+`RemoteSigned` deja correr tus scripts locales (como el perfil) y sigue bloqueando los descargados de internet sin firma.
+
+*Paso 2 — abrir el perfil* (sirve para PowerShell, Terminal y VS Code):
 
 ```powershell
 if (!(Test-Path $PROFILE.CurrentUserAllHosts)) { New-Item -ItemType File -Path $PROFILE.CurrentUserAllHosts -Force }
 notepad $PROFILE.CurrentUserAllHosts
 ```
 
-Pega esta función, guarda y cierra (si tu carpeta no es `C:\Gary\mi_foco`, cambia `$carpeta`):
+*Paso 3 — pegar la función*, guardar y cerrar (si tu carpeta no es `C:\Gary\mi_foco`, cambia `$carpeta`):
 
 ```powershell
 function restartmifoco {
@@ -88,7 +100,7 @@ function restartmifoco {
 
 > Los mensajes van sin tildes a propósito: Windows PowerShell 5 lee mal los acentos de un perfil guardado con el Bloc de notas.
 
-Cárgala en la terminal actual (las terminales nuevas la cargan solas):
+*Paso 4 — cargarla* en la terminal actual (las terminales nuevas la cargan solas):
 
 ```powershell
 . $PROFILE.CurrentUserAllHosts
@@ -103,14 +115,21 @@ restartmifoco
 Verás *Mi Foco detenido*, el resultado del `git pull` y, en verde, *Mi Foco corriendo en http://127.0.0.1:5050*.
 Luego recarga la página con `Ctrl + F5`.
 
-**Si la terminal dice que la ejecución de scripts está deshabilitada,** el perfil no se carga. Este comando lo habilita
-solo para tu usuario y no requiere administrador:
+**Si al cargar el perfil sigue saliendo el error de ejecución de scripts,** revisa:
 
 ```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+Get-ExecutionPolicy -List
 ```
 
-Si tu empresa tiene esa política bloqueada, pega la función directamente en la terminal: funciona durante esa sesión.
+- Si **CurrentUser** ya dice `RemoteSigned` pero falla, Windows pudo marcar el perfil como "descargado" (pasa cuando
+  la carpeta Documentos está en OneDrive). Quítale la marca y vuelve a cargarlo:
+  ```powershell
+  Unblock-File $PROFILE.CurrentUserAllHosts
+  . $PROFILE.CurrentUserAllHosts
+  ```
+- Si **MachinePolicy** o **UserPolicy** tienen un valor distinto de `Undefined`, la política la impuso la empresa y
+  tiene prioridad. No la fuerces: pega la función directamente en la terminal (funciona mientras esté abierta) o pide
+  a TI que habiliten `RemoteSigned` para tu usuario.
 
 **Hacerlo a mano (sin la función):**
 
