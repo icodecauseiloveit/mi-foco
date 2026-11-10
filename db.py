@@ -227,6 +227,9 @@ def init_db():
         # Novedad: algo impide terminar la tarea o subtarea (se conserva el tiempo dedicado)
         _agregar_columnas(conn, "tareas", {"novedad": "TEXT", "novedad_en": "TEXT"})
         _agregar_columnas(conn, "subtareas", {"novedad": "TEXT", "novedad_en": "TEXT"})
+        # Subtareas multinivel: la subtarea madre (NULL = primer nivel). Máximo 3 niveles.
+        _agregar_columnas(conn, "subtareas", {"padre_id": "INTEGER"})
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_subtareas_padre ON subtareas(padre_id)")
         # Primera vez con catálogos: se cargan con lo que ya existe en las tareas.
         if conn.execute("SELECT COUNT(*) FROM categorias").fetchone()[0] == 0:
             conn.execute(

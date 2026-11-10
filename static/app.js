@@ -27,6 +27,7 @@ const st = {
   metas: [],
   catalogos: { categorias: [], descripciones: [] },
   subInvertidas: new Set(),
+  subPlegadas: new Set(),       // subtareas madre plegadas (sus hijas no se muestran)
   subHoy: new Set(),
   expandidas: new Set(),       // tareas desplegadas en la vista Tareas
   hist: { tab: 'semana', anio: null, semana: null },          // en Hoy van plegadas; aquí las que el usuario abrió   // tareas cuya lista de subtareas el usuario abrió/cerró a mano
@@ -107,7 +108,7 @@ function ordenPrioridad(a, b) {
 async function cargarTareas() {
   st.tareas = await api('/api/tareas?incluir_cerradas=1');
   const t = st.tareas.find((x) => x.sesion_abierta);
-  st.activa = t ? { id: t.id, titulo: t.subtarea_en_curso ? `${t.titulo} › ${t.subtarea_en_curso.titulo}` : t.titulo,
+  st.activa = t ? { id: t.id, titulo: t.subtarea_en_curso ? `${t.titulo} › ${t.subtarea_en_curso.ruta || t.subtarea_en_curso.titulo}` : t.titulo,
     base: t.minutos_sesion_actual, desde: Date.now() } : null;
   pintarEnCurso();
 }
@@ -219,7 +220,9 @@ function etiquetaLimite(t) {
 const recorte = (txt, n) => (txt.length > n ? txt.slice(0, n - 1) + '…' : txt);
 /** Subtarea corriendo o, si no hay, la primera pendiente. */
 // La que sigue: la que está corriendo o, si no, la primera pendiente SIN novedad (las que tienen novedad se saltan).
-const siguienteSubtarea = (t) => (t.subtareas || []).find((s) => s.sesion_abierta) || (t.subtareas || []).find((s) => !s.completada && !s.novedad);
+// En subtareas multinivel solo cuentan las del último nivel (las madres se completan con sus hijas).
+const siguienteSubtarea = (t) => (t.subtareas || []).find((s) => s.sesion_abierta)
+  || (t.subtareas || []).find((s) => !s.completada && !s.novedad && !s.novedad_arriba && !s.tiene_hijas);
 const corriendoTarea = (t) => !!t.subtarea_en_curso || t.estado === 'en_progreso';
 /** ¿Hay algo que hacer ya en esta tarea? No, si la tarea tiene novedad o todas sus subtareas pendientes la tienen. */
 const sePuedeTrabajar = (t) => corriendoTarea(t) || (!t.novedad && (!t.tiempo_por_subtareas || !!siguienteSubtarea(t)));
@@ -228,16 +231,30 @@ const sePuedeTrabajar = (t) => corriendoTarea(t) || (!t.novedad && (!t.tiempo_po
 const subExpandida = (t) => (abierta(t) ? !st.subInvertidas.has(t.id) : st.subInvertidas.has(t.id));
 
 function checklistSubtareas(t, conAgregar = true) {
-  return `<ul class="subtareas">${t.subtareas.map((s) => {
+  let plegadaHasta = 0;  // nivel de la madre plegada cuyas hijas se están ocultando
+  const visibles = t.subtareas.filter((s) => {
+    const nivel = s.nivel || 1;
+    if (plegadaHasta && nivel > plegadaHasta) return false;
+    plegadaHasta = s.tiene_hijas && st.subPlegadas.has(s.id) ? nivel : 0;
+    return true;
+  });
+  return `<ul class="subtareas">${visibles.map((s) => {
     const est = s.completada ? 'hecho' : s.novedad ? 'novedad' : 'vacio';
-    return `<li class="${s.completada ? 'hecha' : ''} ${s.novedad && !s.completada ? 'con-novedad' : ''} ${s.es_entregable ? 'entregable' : ''} ${s.sesion_abierta ? 'corriendo' : ''}">
+    const nivel = s.nivel || 1;
+    const plegada = st.subPlegadas.has(s.id);
+    return `<li class="${s.completada ? 'hecha' : ''} ${s.novedad && !s.completada ? 'con-novedad' : ''} ${s.es_entregable ? 'entregable' : ''} ${s.sesion_abierta ? 'corriendo' : ''} ${s.tiene_hijas ? 'madre' : ''} nivel-${nivel}" style="--nivel:${nivel - 1}">
+      ${s.tiene_hijas ? `<button type="button" class="plegar-sub" data-plegar-sub="${s.id}" title="${plegada ? 'Mostrar' : 'Ocultar'} sus subtareas" aria-expanded="${!plegada}">${plegada ? '▸' : '▾'}</button>`
+        : t.subtareas_multinivel ? '<span class="plegar-sub vacio"></span>' : ''}
       <span class="sub-marca" role="checkbox" tabindex="${t.estado === 'cancelada' ? -1 : 0}" aria-checked="${est === 'hecho' ? 'true' : est === 'novedad' ? 'mixed' : 'false'}"
-        ${t.estado === 'cancelada' ? 'aria-disabled="true"' : `data-chk-subtarea="${s.id}" data-tarea="${t.id}" data-estado="${est}" data-titulo="${esc(s.titulo)}"`}
+        ${t.estado === 'cancelada' ? 'aria-disabled="true"' : `data-chk-subtarea="${s.id}" data-tarea="${t.id}" data-estado="${est}" data-titulo="${esc(s.titulo)}" data-pendientes="${s.tiene_hijas ? s.hojas_total - s.hojas_hechas : 0}" data-debajo="${s.tiene_hijas ? s.hojas_total : 0}"`}
         title="Clic: completar · otro clic: ● con novedad · otro clic: pendiente">
         <span class="chk chk-${est}"></span>
         <span class="sub-titulo">${s.es_entregable ? '<em class="tag-entregable">📦 Entregable</em> ' : ''}${esc(s.titulo)}</span></span>
-      ${s.tiempo_min > 0 || s.sesion_abierta ? `<span class="tiempo-sub" title="Tiempo trabajado en esta subtarea">⏱ ${fmtMin(s.tiempo_min)}</span>` : ''}
-      ${!s.completada && abierta(t) ? (s.sesion_abierta
+      ${s.tiene_hijas ? `<span class="cuenta-sub" title="Subtareas listas debajo">${s.hojas_hechas}/${s.hojas_total}</span>` : ''}
+      ${s.tiempo_min > 0 || s.sesion_abierta ? `<span class="tiempo-sub" title="${s.tiene_hijas ? 'Tiempo trabajado en sus subtareas' : 'Tiempo trabajado en esta subtarea'}">⏱ ${fmtMin(s.tiempo_min)}</span>` : ''}
+      ${conAgregar && abierta(t) && nivel < MAX_NIVEL_SUB && !s.es_entregable && !s.completada
+        ? `<button type="button" class="ico sub-hija" data-sub-hija-de="${s.id}" data-tarea="${t.id}" data-titulo="${esc(s.titulo)}" title="Agregar una subtarea debajo de «${esc(s.titulo)}»">↳</button>` : ''}
+      ${!s.completada && !s.tiene_hijas && abierta(t) ? (s.sesion_abierta
         ? `<button type="button" class="crono-sub en-curso" data-sub-accion="pausar" data-sub="${s.id}" data-tarea="${t.id}" title="Pausar">${ICO_PAUSA}</button>`
         : `<button type="button" class="crono-sub" data-sub-accion="iniciar" data-sub="${s.id}" data-tarea="${t.id}" title="Iniciar el tiempo en esta subtarea">${ICO_PLAY}</button>`) : ''}
       ${s.completada && s.completada_en ? `<button type="button" class="fecha-sub" data-fecha-subtarea="${s.id}" data-tarea="${t.id}" title="Cambiar la fecha en que se completó">✅ ${fmtFecha(s.completada_en)} <span class="lapiz">✎</span></button>` : ''}
@@ -286,7 +303,7 @@ function opcionesDependencia(t) {
       const subs = x.subtareas.filter((s) => !s.completada);
       return `<optgroup label="${esc(`${x.prioridad} · ${x.titulo}`)}">
         <option value="tarea:${x.id}" ${elegidas.has(`tarea:${x.id}`) ? 'disabled' : ''}>▸ Toda la tarea</option>
-        ${subs.map((s) => `<option value="subtarea:${s.id}" ${elegidas.has(`subtarea:${s.id}`) ? 'disabled' : ''}>↳ ${esc(s.titulo)}</option>`).join('')}
+        ${subs.map((s) => `<option value="subtarea:${s.id}" ${elegidas.has(`subtarea:${s.id}`) ? 'disabled' : ''}>${'\u00a0\u00a0'.repeat((s.nivel || 1) - 1)}↳ ${esc(s.titulo)}</option>`).join('')}
       </optgroup>`;
     }).join('');
 }
@@ -372,7 +389,7 @@ function accionPrincipal(t, conTexto) {
 
 function tarjetaTarea(t) {
   const desplegada = st.expandidas.has(t.id);
-  const estadoTxt = t.subtarea_en_curso ? `En progreso · ▶ «${esc(t.subtarea_en_curso.titulo)}»` : ESTADOS[t.estado];
+  const estadoTxt = t.subtarea_en_curso ? `En progreso · ▶ «${esc(t.subtarea_en_curso.ruta || t.subtarea_en_curso.titulo)}»` : ESTADOS[t.estado];
   let limite = '—';
   if (t.fecha_limite) {
     limite = fmtFecha(t.fecha_limite);
@@ -519,8 +536,8 @@ async function vistaHoy() {
     else if (rana.fecha_limite) detalle.push(`Vence ${fmtFecha(rana.fecha_limite)}`);
     if (rana.subtareas_total) detalle.push(`${rana.subtareas_hechas}/${rana.subtareas_total} subtareas`);
     if (rana.bloqueada) detalle.push('🔒 en espera de otra tarea');
-    if (sig && !rana.subtarea_en_curso) detalle.push(`siguiente: ${esc(sig.titulo)}`);
-    if (rana.subtarea_en_curso) detalle.push(`<span class="txt-acento">▶ en «${esc(rana.subtarea_en_curso.titulo)}»</span>`);
+    if (sig && !rana.subtarea_en_curso) detalle.push(`siguiente: ${esc(sig.ruta || sig.titulo)}`);
+    if (rana.subtarea_en_curso) detalle.push(`<span class="txt-acento">▶ en «${esc(rana.subtarea_en_curso.ruta || rana.subtarea_en_curso.titulo)}»</span>`);
     else if (rana.estado === 'en_progreso') detalle.push('<span class="txt-acento">▶ en marcha</span>');
     const boton = rana.subtarea_en_curso
       ? `<button class="secundario" data-sub-accion="pausar" data-sub="${rana.subtarea_en_curso.id}" data-tarea="${rana.id}">⏸ Pausar</button>`
@@ -634,7 +651,7 @@ function filaHoy(t, tipo) {
   if (t.subtarea_en_curso) accion = `<button class="fila-btn activo" data-sub-accion="pausar" data-sub="${t.subtarea_en_curso.id}" data-tarea="${t.id}" title="Pausar">${ICO_PAUSA}</button>`;
   else if (t.estado === 'en_progreso') accion = `<button class="fila-btn activo" data-accion="pausar" data-id="${t.id}" title="Pausar">${ICO_PAUSA}</button>`;
   else if (!sePuedeTrabajar(t)) accion = `<button class="fila-btn con-novedad" data-detalle="${t.id}" title="Con novedad: resuélvela para continuar (ver detalle)">●</button>`;
-  else if (sig) accion = `<button class="fila-btn" data-sub-accion="iniciar" data-sub="${sig.id}" data-tarea="${t.id}" title="Iniciar «${esc(sig.titulo)}»">${ICO_PLAY}</button>`;
+  else if (sig) accion = `<button class="fila-btn" data-sub-accion="iniciar" data-sub="${sig.id}" data-tarea="${t.id}" title="Iniciar «${esc(sig.ruta || sig.titulo)}»">${ICO_PLAY}</button>`;
   else accion = `<button class="fila-btn" data-accion="iniciar" data-id="${t.id}" title="${t.estado === 'pausada' ? 'Reanudar' : 'Iniciar'}">${ICO_PLAY}</button>`;
 
   return `<li class="fila-hoy ${tipo === 'urgente' && t.vencida ? 'urgente' : ''}">
@@ -982,26 +999,56 @@ function selectorDescripcion() {
     </select>`;
 }
 
-const filaSubtarea = (s = {}) => `<div class="sub-fila" data-sub-id="${s.id || ''}">
-    <span class="sub-arrastre" title="Arrastra para cambiar el orden (o Alt + ↑/↓ en el texto)" aria-hidden="true">⠿</span>
+const MAX_NIVEL_SUB = 3;
+const filaSubtarea = (s = {}) => `<div class="sub-fila" data-sub-id="${s.id || ''}" data-nivel="${s.nivel || 1}">
+    <span class="sub-arrastre" title="Arrastra para cambiar el orden con todo lo que tiene debajo (o Alt + ↑/↓ en el texto)" aria-hidden="true">⠿</span>
     <span class="sub-estado" title="${s.completada ? 'Completada' : 'Pendiente'}">${s.completada ? '✓' : '○'}</span>
     <input class="sub-input" value="${esc(s.titulo || '')}" placeholder="Ej. U108 — actualizar fecha de ejecución" maxlength="200" autocomplete="off">
-    <button type="button" class="ico" data-quitar-sub title="Quitar">✕</button>
+    <button type="button" class="ico sub-hija" data-sub-hija title="Agregar una subtarea debajo de esta">↳</button>
+    <button type="button" class="ico" data-quitar-sub title="Quitar (con lo que tenga debajo)">✕</button>
   </div>`;
+
+/* Niveles en el editor: cada fila sabe su nivel; una «madre» es la fila seguida de filas con más nivel. */
+const nivelFila = (f) => Number(f.dataset.nivel || 1);
+function bloqueFila(fila) {
+  const bloque = [fila];
+  for (let x = fila.nextElementSibling; x && nivelFila(x) > nivelFila(fila); x = x.nextElementSibling) bloque.push(x);
+  return bloque;
+}
+/** Deja niveles válidos: el primero en 1 y ninguno más de uno por debajo del anterior (máx. 3). */
+function normalizarNiveles(cont = $('#f-tarea .sub-filas')) {
+  if (!cont) return;
+  let previo = 0;
+  [...cont.children].forEach((f) => {
+    const n = Math.max(1, Math.min(nivelFila(f), previo + 1, MAX_NIVEL_SUB));
+    f.dataset.nivel = n;
+    previo = n;
+  });
+}
+function cambiarNivelBloque(fila, delta) {
+  const bloque = bloqueFila(fila);
+  const n = nivelFila(fila) + delta;
+  const anterior = fila.previousElementSibling;
+  const hondo = Math.max(...bloque.map(nivelFila)) + delta;
+  if (n < 1 || n > (anterior ? nivelFila(anterior) + 1 : 1) || hondo > MAX_NIVEL_SUB) return false;
+  bloque.forEach((f) => { f.dataset.nivel = nivelFila(f) + delta; });
+  normalizarNiveles();
+  return true;
+}
 
 function editorSubtareas(subs) {
   return `<div class="sub-editor">
     <div class="sub-filas">${subs.map(filaSubtarea).join('')}</div>
     <button type="button" class="mini" data-agregar-sub>+ Agregar subtarea</button>
     ${st.ia.activa ? '<button type="button" class="ia-btn mini" data-ia-subtareas title="La IA propone los pasos a partir del título, la descripción y el entregable">✨ Sugerir pasos</button>' : ''}
-    <span class="ayuda">Enter agrega otra · ⠿ arrastra para ordenar · puedes pegar una lista (una por línea)</span>
+    <span class="ayuda">Enter agrega otra · <b>Tab</b> la mete debajo de la anterior, <b>Shift + Tab</b> la saca · ↳ agrega debajo · ⠿ arrastra para ordenar · hasta 3 niveles</span>
   </div>`;
 }
 
-function agregarFilaSub(despuesDe = null, titulo = '') {
+function agregarFilaSub(despuesDe = null, titulo = '', nivel = null) {
   const cont = $('#f-tarea .sub-filas');
   const tmp = document.createElement('div');
-  tmp.innerHTML = filaSubtarea({ titulo });
+  tmp.innerHTML = filaSubtarea({ titulo, nivel: nivel || (despuesDe ? nivelFila(despuesDe) : 1) });
   const fila = tmp.firstElementChild;
   if (despuesDe) despuesDe.after(fila); else cont.appendChild(fila);
   return fila;
@@ -1281,6 +1328,10 @@ async function aplicarSubtarea(marca, sid, inicial, final) {
   const tid = Number(marca.dataset.tarea);
   const titulo = marca.dataset.titulo;
   const revertir = () => { marca.querySelector('.chk').className = `chk chk-${inicial}`; };
+  const pendientes = Number(marca.dataset.pendientes || 0);
+  const debajo = Number(marca.dataset.debajo || 0);
+  if (final === 'hecho' && pendientes && !confirm(`«${titulo}» tiene ${pendientes} subtarea(s) pendiente(s) debajo.\n\n¿Completarla junto con todas ellas?`)) { revertir(); return; }
+  if (final === 'vacio' && inicial === 'hecho' && debajo && !confirm(`¿Desmarcar «${titulo}» y sus ${debajo} subtarea(s)?`)) { revertir(); return; }
   let cuerpo;
   if (final === 'hecho') cuerpo = { completada: true };
   else if (final === 'novedad') {
@@ -1555,7 +1606,7 @@ function datosForm(f) {
   }
   if ($('.sub-editor', f)) {
     o.subtareas = $$('.sub-fila', f)
-      .map((r) => ({ id: r.dataset.subId ? Number(r.dataset.subId) : null, titulo: $('.sub-input', r).value.trim() }))
+      .map((r) => ({ id: r.dataset.subId ? Number(r.dataset.subId) : null, titulo: $('.sub-input', r).value.trim(), nivel: nivelFila(r) }))
       .filter((s) => s.titulo);
   }
   return o;
@@ -1842,9 +1893,36 @@ document.addEventListener('click', async (e) => {
     if (d.agregarSub !== undefined) { $('.sub-input', agregarFilaSub()).focus(); return; }
     if (d.quitarSub !== undefined) {
       const fila = el.closest('.sub-fila');
-      if (fila.dataset.subId && fila.querySelector('.sub-estado').textContent === '✓'
+      const bloque = bloqueFila(fila);
+      const nombre = $('.sub-input', fila).value.trim() || 'esta subtarea';
+      if (bloque.length > 1) {
+        if (!confirm(`«${nombre}» tiene ${bloque.length - 1} subtarea(s) debajo. ¿Quitarla junto con ellas?`)) return;
+      } else if (fila.dataset.subId && fila.querySelector('.sub-estado').textContent === '✓'
           && !confirm('Esta subtarea ya está completada. ¿Quitarla de todas formas?')) return;
-      fila.remove();
+      bloque.forEach((f) => f.remove());
+      normalizarNiveles();
+      return;
+    }
+    if (d.plegarSub) {
+      const sid = Number(d.plegarSub);
+      if (st.subPlegadas.has(sid)) st.subPlegadas.delete(sid); else st.subPlegadas.add(sid);
+      if (el.closest('#modal-caja') && $('#modal-caja').dataset.detalleAbierto) return verDetalle(Number($('#modal-caja').dataset.detalleAbierto));
+      return render();
+    }
+    if (d.subHijaDe) {
+      const titulo = prompt(`Nueva subtarea debajo de «${d.titulo}»:`);
+      if (!titulo || !titulo.trim()) return;
+      const t = await api(`/api/tareas/${d.tarea}/subtareas`, { method: 'POST', body: { titulo: titulo.trim(), padre_id: Number(d.subHijaDe) } });
+      st.subPlegadas.delete(Number(d.subHijaDe));
+      toast(`↳ Agregada debajo de «${d.titulo}» · avance ${t.progreso_pct ?? 0}%`);
+      if (el.closest('#modal-caja') && $('#modal-caja').dataset.detalleAbierto) await verDetalle(t.id);
+      return render();
+    }
+    if (d.subHija !== undefined) {
+      const fila = el.closest('.sub-fila');
+      if (nivelFila(fila) >= MAX_NIVEL_SUB) { toast(`Máximo ${MAX_NIVEL_SUB} niveles de subtareas`, 'error'); return; }
+      const bloque = bloqueFila(fila);
+      $('.sub-input', agregarFilaSub(bloque[bloque.length - 1], '', nivelFila(fila) + 1)).focus();
       return;
     }
     if (d.expandir) {
@@ -1967,7 +2045,12 @@ document.addEventListener('keydown', (e) => {
   const fila = inp.closest('.sub-fila');
   if (e.key === 'Enter') {
     e.preventDefault();
-    if (inp.value.trim()) $('.sub-input', agregarFilaSub(fila)).focus();
+    if (!inp.value.trim()) return;
+    // Si tiene subtareas debajo, la nueva va como su primera hija; si no, al mismo nivel.
+    const tieneHijas = bloqueFila(fila).length > 1;
+    $('.sub-input', agregarFilaSub(fila, '', tieneHijas ? nivelFila(fila) + 1 : nivelFila(fila))).focus();
+  } else if (e.key === 'Tab' && !e.ctrlKey && !e.altKey) {
+    if (cambiarNivelBloque(fila, e.shiftKey ? -1 : 1)) e.preventDefault();
   } else if (e.key === 'Backspace' && !inp.value && !fila.dataset.subId) {
     const prev = fila.previousElementSibling;
     if (prev) { e.preventDefault(); fila.remove(); $('.sub-input', prev).focus(); }
@@ -1976,12 +2059,19 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('paste', (e) => {
   const inp = e.target;
   if (!inp.classList || !inp.classList.contains('sub-input')) return;
-  const lineas = (e.clipboardData.getData('text') || '').split(/\r?\n/).map((l) => l.replace(/^[\s•\-*\d.)]+/, '').trim()).filter(Boolean);
-  if (lineas.length < 2) return;
+  // La sangría de cada línea (tabulaciones o cada 2 espacios) se vuelve nivel: así se pega un esquema.
+  const crudas = (e.clipboardData.getData('text') || '').split(/\r?\n/).filter((l) => l.trim());
+  if (crudas.length < 2) return;
   e.preventDefault();
-  inp.value = (inp.value + lineas[0]).trim();
-  let ultima = inp.closest('.sub-fila');
-  for (const l of lineas.slice(1)) ultima = agregarFilaSub(ultima, l);
+  const sangria = (l) => { const m = l.match(/^[\t ]*/)[0]; return (m.match(/\t/g) || []).length + Math.floor(m.replace(/\t/g, '').length / 2); };
+  const minimo = Math.min(...crudas.map(sangria));
+  const lineas = crudas.map((l) => ({ texto: l.replace(/^[\s•\-*\d.)]+/, '').trim(), extra: sangria(l) - minimo })).filter((x) => x.texto);
+  const fila0 = inp.closest('.sub-fila');
+  const base = nivelFila(fila0);
+  inp.value = (inp.value + lineas[0].texto).trim();
+  let ultima = fila0;
+  for (const l of lineas.slice(1)) ultima = agregarFilaSub(ultima, l.texto, base + l.extra);
+  normalizarNiveles();
   $('.sub-input', ultima).focus();
 });
 
@@ -2114,24 +2204,31 @@ document.addEventListener('pointerdown', (e) => {
   if (!asa || e.button !== 0) return;
   const fila = asa.closest('.sub-fila');
   const cont = fila.parentElement;
+  const bloque = bloqueFila(fila);  // la subtarea viaja con todo lo que tiene debajo
   e.preventDefault();
   // Se escucha en todo el documento: mover la fila en el DOM suelta la captura del puntero.
-  fila.classList.add('arrastrando');
+  bloque.forEach((f) => f.classList.add('arrastrando'));
   cont.classList.add('ordenando');
   const mover = (ev) => {
     if (ev.pointerId !== e.pointerId) return;
     const y = ev.clientY;
     const siguiente = [...cont.querySelectorAll('.sub-fila:not(.arrastrando)')]
       .find((o) => { const r = o.getBoundingClientRect(); return y < r.top + r.height / 2; });
-    if (siguiente) { if (fila.nextElementSibling !== siguiente) cont.insertBefore(fila, siguiente); }
-    else if (cont.lastElementChild !== fila) cont.appendChild(fila);
+    const ultimaDelBloque = bloque[bloque.length - 1];
+    if (siguiente) { if (ultimaDelBloque.nextElementSibling !== siguiente) siguiente.before(...bloque); }
+    else if (cont.lastElementChild !== ultimaDelBloque) cont.append(...bloque);
     const caja = $('#modal-caja').getBoundingClientRect();  // desplaza la ventana si llegas al borde
     if (y < caja.top + 48) $('#modal-caja').scrollTop -= 14;
     else if (y > caja.bottom - 48) $('#modal-caja').scrollTop += 14;
   };
   const soltar = () => {
-    fila.classList.remove('arrastrando');
+    bloque.forEach((f) => f.classList.remove('arrastrando'));
     cont.classList.remove('ordenando');
+    // Si quedó más hondo de lo permitido en su nueva posición, el bloque sube de nivel entero.
+    const anterior = fila.previousElementSibling;
+    const exceso = nivelFila(fila) - (anterior ? nivelFila(anterior) + 1 : 1);
+    if (exceso > 0) bloque.forEach((f) => { f.dataset.nivel = nivelFila(f) - exceso; });
+    normalizarNiveles(cont);
     document.removeEventListener('pointermove', mover);
     document.removeEventListener('pointerup', soltar);
     document.removeEventListener('pointercancel', soltar);
@@ -2144,8 +2241,16 @@ document.addEventListener('keydown', (e) => {
   if (!e.altKey || !['ArrowUp', 'ArrowDown'].includes(e.key) || !e.target.classList.contains('sub-input')) return;
   e.preventDefault();
   const fila = e.target.closest('.sub-fila');
-  if (e.key === 'ArrowUp' && fila.previousElementSibling) fila.previousElementSibling.before(fila);
-  if (e.key === 'ArrowDown' && fila.nextElementSibling) fila.nextElementSibling.after(fila);
+  const bloque = bloqueFila(fila);
+  if (e.key === 'ArrowUp' && fila.previousElementSibling) fila.previousElementSibling.before(...bloque);
+  if (e.key === 'ArrowDown') {
+    const sig = bloque[bloque.length - 1].nextElementSibling;
+    if (sig) { const otro = bloqueFila(sig); otro[otro.length - 1].after(...bloque); }
+  }
+  const anterior = fila.previousElementSibling;
+  const exceso = nivelFila(fila) - (anterior ? nivelFila(anterior) + 1 : 1);
+  if (exceso > 0) bloque.forEach((f) => { f.dataset.nivel = nivelFila(f) - exceso; });
+  normalizarNiveles();
   e.target.focus();
 });
 

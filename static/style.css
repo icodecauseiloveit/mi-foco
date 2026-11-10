@@ -784,3 +784,26 @@ html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
 .sub-fila.arrastrando { position: relative; z-index: 2; background: var(--superficie); border-radius: 10px;
   box-shadow: 0 6px 18px rgba(15, 17, 30, .18); outline: 2px solid var(--acento); }
 .sub-fila.arrastrando .sub-arrastre { color: var(--acento); }
+
+/* ───────── Subtareas multinivel ───────── */
+/* editor */
+.sub-fila[data-nivel="2"] { margin-left: 26px; }
+.sub-fila[data-nivel="3"] { margin-left: 52px; }
+.sub-fila[data-nivel="2"]::before, .sub-fila[data-nivel="3"]::before { content: ""; width: 10px; height: 14px; margin-left: -18px; margin-right: -4px; flex: none;
+  border-left: 1.5px solid var(--borde); border-bottom: 1.5px solid var(--borde); border-bottom-left-radius: 6px; transform: translateY(-6px); }
+.sub-fila[data-nivel="3"] .sub-hija { visibility: hidden; }
+.sub-fila .sub-hija { color: var(--sutil); font-weight: 700; }
+.sub-fila .sub-hija:hover { color: var(--acento); }
+/* checklist en tarjetas y detalle */
+.subtareas li { padding-left: calc(var(--nivel, 0) * 24px); }
+.subtareas li.madre > .sub-marca .sub-titulo { font-weight: 600; }
+.plegar-sub { flex: none; width: 18px; height: 18px; padding: 0; border: 0; background: none; color: var(--sutil); cursor: pointer;
+  font-size: .8rem; line-height: 1; border-radius: 4px; }
+.plegar-sub:hover { color: var(--acento); background: var(--acento-suave); }
+.plegar-sub.vacio { cursor: default; background: none; }
+.cuenta-sub { font-size: .72rem; color: var(--sutil); background: var(--fondo); border: 1px solid var(--borde); border-radius: 999px;
+  padding: 1px 7px; font-variant-numeric: tabular-nums; flex: none; }
+.subtareas li.madre.hecha .cuenta-sub { color: var(--exito, #15803d); }
+.subtareas .sub-hija { opacity: 0; transition: opacity .15s; color: var(--sutil); font-weight: 700; }
+.subtareas li:hover > .sub-hija, .subtareas .sub-hija:focus-visible { opacity: 1; }
+@media (hover: none) { .subtareas .sub-hija { opacity: .7; } }

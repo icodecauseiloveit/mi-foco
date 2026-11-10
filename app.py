@@ -175,19 +175,127 @@ def tiempos_por_subtarea(conn, tid=None):
     return totales, abiertas
 
 
+MAX_NIVEL_SUB = 3
+
+
+def ordenar_arbol(filas):
+    """Ordena las subtareas de UNA tarea en profundidad (madre, sus hijas, luego la siguiente madre) y
+    anota nivel, ruta («Madre › Hija») y las hijas de cada una. El entregable siempre va de último."""
+    nodos = {f["id"]: f for f in filas}
+    hijas = {}
+    for f in sorted(filas, key=lambda x: (x["orden"] or 0, x["id"])):
+        padre = f.get("padre_id")
+        if padre not in nodos or f.get("es_entregable"):
+            padre = None  # madre inexistente (o el entregable): queda en el primer nivel
+        f["padre_id"] = padre
+        hijas.setdefault(padre, []).append(f)
+    salida = []
+
+    def visitar(f, nivel, ruta):
+        f["nivel"] = nivel
+        f["ruta"] = " › ".join(ruta + [f["titulo"]])
+        f["hijas_ids"] = [h["id"] for h in hijas.get(f["id"], [])]
+        salida.append(f)
+        for h in hijas.get(f["id"], []):
+            visitar(h, nivel + 1, ruta + [f["titulo"]])
+
+    raices = hijas.get(None, [])
+    for f in [r for r in raices if not r.get("es_entregable")] + [r for r in raices if r.get("es_entregable")]:
+        visitar(f, 1, [])
+    return salida
+
+
 def subtareas_por_tarea(conn, tid=None):
     q = "SELECT * FROM subtareas" + (" WHERE tarea_id=?" if tid else "") + " ORDER BY orden, id"
     tiempos, abiertas = tiempos_por_subtarea(conn, tid)
-    res = {}
+    por_tarea = {}
     for s in conn.execute(q, (tid,) if tid else ()):
         d = dict(s)
         d["completada"] = bool(d["completada"])
         d["es_entregable"] = bool(d.get("es_entregable"))
-        d["tiempo_min"] = round(tiempos.get(d["id"], 0), 1)
-        d["sesion_abierta"] = d["id"] in abiertas
-        d["minutos_sesion_actual"] = round(abiertas.get(d["id"], 0), 1)
-        res.setdefault(d["tarea_id"], []).append(d)
+        por_tarea.setdefault(d["tarea_id"], []).append(d)
+    res = {}
+    for t_id, filas in por_tarea.items():
+        lista = ordenar_arbol(filas)
+        por_id = {d["id"]: d for d in lista}
+        for d in reversed(lista):  # de abajo hacia arriba: la madre suma lo de sus hijas
+            hs = [por_id[h] for h in d["hijas_ids"]]
+            d["tiene_hijas"] = bool(hs)
+            propio = tiempos.get(d["id"], 0)
+            d["tiempo_min"] = round(propio + sum(h["tiempo_min"] for h in hs), 1)
+            d["sesion_abierta"] = d["id"] in abiertas
+            d["corre_debajo"] = any(h["sesion_abierta"] or h["corre_debajo"] for h in hs)
+            d["minutos_sesion_actual"] = round(abiertas.get(d["id"], 0), 1)
+            if hs:
+                d["hojas_total"] = sum(h["hojas_total"] for h in hs)
+                d["hojas_hechas"] = sum(h["hojas_hechas"] for h in hs)
+            else:
+                d["hojas_total"], d["hojas_hechas"] = 1, int(d["completada"])
+        for d in lista:  # de arriba hacia abajo: una novedad en la madre frena a sus hijas
+            madre = por_id.get(d["padre_id"])
+            d["novedad_arriba"] = bool(madre and (madre.get("novedad") and not madre["completada"] or madre["novedad_arriba"]))
+            d.pop("hijas_ids", None)
+        res[t_id] = lista
     return res
+
+
+def descendientes(conn, sid):
+    """Ids de todas las subtareas debajo de `sid` (hijas, nietas…)."""
+    ids, pila = [], [sid]
+    while pila:
+        hijos = [r["id"] for r in conn.execute("SELECT id FROM subtareas WHERE padre_id=?", (pila.pop(),))]
+        ids += hijos
+        pila += hijos
+    return ids
+
+
+def ruta_subtarea(conn, sid):
+    """«Madre › Hija › Nieta» de una subtarea (o solo su título si está en el primer nivel)."""
+    partes, actual, vistos = [], sid, set()
+    while actual and actual not in vistos:
+        vistos.add(actual)
+        r = conn.execute("SELECT titulo, padre_id FROM subtareas WHERE id=?", (actual,)).fetchone()
+        if not r:
+            break
+        partes.insert(0, r["titulo"])
+        actual = r["padre_id"]
+    return " › ".join(partes)
+
+
+def mapa_rutas(conn):
+    """{id de subtarea: ruta} para todas las subtareas (reportes, dependencias)."""
+    return {d["id"]: d["ruta"] for lista in subtareas_por_tarea(conn).values() for d in lista}
+
+
+def renumerar_subtareas(conn, tid):
+    """Reescribe `orden` siguiendo el árbol (y el entregable al final)."""
+    filas = [dict(r) for r in conn.execute("SELECT id, titulo, orden, padre_id, es_entregable FROM subtareas WHERE tarea_id=?", (tid,))]
+    for i, f in enumerate(ordenar_arbol(filas), start=1):
+        conn.execute("UPDATE subtareas SET orden=?, padre_id=? WHERE id=?", (i, f["padre_id"], f["id"]))
+
+
+def recalcular_madres(conn, tid, momento):
+    """Una subtarea madre queda completada cuando todas sus hijas lo están, y vuelve a quedar abierta si
+    alguna hija se desmarca o se agrega una nueva. Si la madre tiene una novedad abierta no se completa sola."""
+    filas = [dict(r) for r in conn.execute("SELECT * FROM subtareas WHERE tarea_id=?", (tid,))]
+    lista = ordenar_arbol(filas)
+    por_id = {f["id"]: f for f in lista}
+    for f in reversed(lista):
+        hs = [por_id[h] for h in f["hijas_ids"]]
+        if not hs:
+            continue
+        todas = all(h["completada"] for h in hs)
+        if todas and not f["completada"] and not f["novedad"]:
+            fin = max((h["completada_en"] or momento) for h in hs)
+            conn.execute("UPDATE subtareas SET completada=1, completada_en=? WHERE id=?", (fin, f["id"]))
+            f["completada"], f["completada_en"] = 1, fin
+            registrar_evento(conn, tid, "subtarea_completada", None, None,
+                             f"✓ «{f['ruta']}»: todas sus subtareas listas · avance {avance_texto(conn, tid)}")
+        elif not todas and f["completada"]:
+            conn.execute("UPDATE subtareas SET completada=0, completada_en=NULL WHERE id=?", (f["id"],))
+            f["completada"], f["completada_en"] = 0, None
+            registrar_evento(conn, tid, "subtarea_reabierta", None, None,
+                             f"↺ «{f['ruta']}» queda abierta: tiene subtareas pendientes · avance {avance_texto(conn, tid)}")
 
 
 # ───────────────────────── dependencias ─────────────────────────
@@ -209,7 +317,9 @@ CERRADOS = ("completada", "cancelada")
 def info_dependencias(conn):
     """Devuelve ({tarea: [requisitos]}, {tarea requisito: [tareas abiertas que frena]})."""
     requisitos, frena = {}, {}
-    for r in conn.execute(SQL_DEPENDENCIAS):
+    filas = conn.execute(SQL_DEPENDENCIAS).fetchall()
+    rutas = mapa_rutas(conn) if any(r["depende_subtarea_id"] for r in filas) else {}
+    for r in filas:
         if r["dep_eliminada"]:
             continue
         if r["depende_tarea_id"]:
@@ -221,7 +331,7 @@ def info_dependencias(conn):
             padre_cerrado = bool(r["p_eliminada"]) or r["p_estado"] in CERRADOS
             completa = bool(r["s_completada"]) or padre_cerrado
             item = {"id": r["id"], "tipo": "subtarea", "ref_id": r["depende_subtarea_id"], "tarea_id": r["s_padre"],
-                    "titulo": r["s_titulo"], "tarea_titulo": r["p_titulo"],
+                    "titulo": rutas.get(r["depende_subtarea_id"], r["s_titulo"]), "tarea_titulo": r["p_titulo"],
                     "estado": "completada" if r["s_completada"] else ("eliminada" if r["p_eliminada"] else r["p_estado"])}
         item["completa"] = completa
         requisitos.setdefault(r["tarea_id"], []).append(item)
@@ -351,23 +461,26 @@ def serializar(row, totales, abiertas, subs=None, deps=None, coment=None, adj=No
     t["bloqueada"] = t["estado"] in ABIERTOS and any(not x["completa"] for x in t["dependencias"])
     t["frena_a"] = frena.get(t["id"], []) if t["estado"] in ABIERTOS else []
     lista = (subs or {}).get(t["id"], [])
-    hechas = sum(1 for s in lista if s["completada"])
+    hojas = [s for s in lista if not s.get("tiene_hijas")]  # el avance se cuenta con las del último nivel
+    hechas = sum(1 for s in hojas if s["completada"])
     t["subtareas"] = lista
-    t["novedades_sub"] = [{"id": x["id"], "titulo": x["titulo"], "novedad": x["novedad"], "novedad_en": x["novedad_en"]}
+    t["subtareas_multinivel"] = any(s.get("nivel", 1) > 1 for s in lista)
+    t["novedades_sub"] = [{"id": x["id"], "titulo": x.get("ruta") or x["titulo"], "novedad": x["novedad"], "novedad_en": x["novedad_en"]}
                           for x in lista if x.get("novedad") and not x["completada"]]
     t["con_novedad"] = bool(t.get("novedad")) or bool(t["novedades_sub"])
     corriendo = next((x for x in lista if x.get("sesion_abierta")), None)
-    t["subtarea_en_curso"] = {"id": corriendo["id"], "titulo": corriendo["titulo"]} if corriendo else None
-    t["tiempo_por_subtareas"] = any(not x["completada"] for x in lista)  # el tiempo se inicia desde las subtareas
+    t["subtarea_en_curso"] = ({"id": corriendo["id"], "titulo": corriendo["titulo"], "ruta": corriendo.get("ruta") or corriendo["titulo"]}
+                              if corriendo else None)
+    t["tiempo_por_subtareas"] = any(not x["completada"] for x in hojas)  # el tiempo se inicia desde las subtareas
     ent = next((x for x in lista if x["es_entregable"]), None)
     t["entregable"] = ent["titulo"] if ent else None
     t["entregable_listo"] = bool(ent and ent["completada"]) if ent else None
-    t["subtareas_total"] = len(lista)
+    t["subtareas_total"] = len(hojas)
     t["subtareas_hechas"] = hechas
     if t["estado"] == "completada":
         t["progreso_pct"] = 100
-    elif lista:
-        t["progreso_pct"] = round(100 * hechas / len(lista))
+    elif hojas:
+        t["progreso_pct"] = round(100 * hechas / len(hojas))
     else:
         t["progreso_pct"] = None
     t["es_rana"] = bool(t["es_rana"])
@@ -426,7 +539,7 @@ def obtener_tarea(conn, tid):
 
 
 def limpiar_subtareas(valor):
-    """Acepta ["texto", ...] o [{"id": 3, "titulo": "texto"}, ...]. Ignora vacías."""
+    """Acepta ["texto", ...] o [{"id": 3, "titulo": "texto", "nivel": 2}, ...] en orden de esquema. Ignora vacías."""
     if valor is None:
         return None
     if not isinstance(valor, list):
@@ -438,7 +551,11 @@ def limpiar_subtareas(valor):
         titulo = (item.get("titulo") or "").strip()[:200]
         if titulo:
             sid = item.get("id")
-            out.append({"id": int(sid) if sid not in (None, "") else None, "titulo": titulo})
+            try:
+                nivel = int(item.get("nivel") or 1)
+            except (TypeError, ValueError):
+                nivel = 1
+            out.append({"id": int(sid) if sid not in (None, "") else None, "titulo": titulo, "nivel": nivel})
     return out
 
 
@@ -448,19 +565,29 @@ def sincronizar_subtareas(conn, tid, lista):
     ahora = db.ahora()
     actuales = {s["id"]: s for s in conn.execute("SELECT * FROM subtareas WHERE tarea_id=? AND es_entregable=0", (tid,))}
     vistos, nuevas, quitadas = set(), [], []
+    pila = []  # (nivel, id) de las madres abiertas en el esquema
     for orden, s in enumerate(lista, start=1):
+        # Nivel válido: entre 1 y uno más que la fila anterior (máx. MAX_NIVEL_SUB).
+        tope = (pila[-1][0] + 1) if pila else 1
+        nivel = max(1, min(s.get("nivel") or 1, tope, MAX_NIVEL_SUB))
+        while pila and pila[-1][0] >= nivel:
+            pila.pop()
+        padre = pila[-1][1] if pila else None
         if s["id"] in actuales:
-            vistos.add(s["id"])
-            conn.execute("UPDATE subtareas SET titulo=?, orden=? WHERE id=?", (s["titulo"], orden, s["id"]))
+            sid = s["id"]
+            vistos.add(sid)
+            conn.execute("UPDATE subtareas SET titulo=?, orden=?, padre_id=? WHERE id=?", (s["titulo"], orden, padre, sid))
         else:
-            conn.execute("INSERT INTO subtareas (tarea_id, titulo, orden, creada_en) VALUES (?,?,?,?)",
-                         (tid, s["titulo"], orden, ahora))
+            sid = conn.execute("INSERT INTO subtareas (tarea_id, titulo, orden, creada_en, padre_id) VALUES (?,?,?,?,?)",
+                               (tid, s["titulo"], orden, ahora, padre)).lastrowid
             nuevas.append(s["titulo"])
+        pila.append((nivel, sid))
     for sid, s in actuales.items():
         if sid not in vistos:
             conn.execute("DELETE FROM subtareas WHERE id=?", (sid,))
             quitadas.append(s["titulo"])
-    conn.execute("UPDATE subtareas SET orden=? WHERE tarea_id=? AND es_entregable=1", (len(lista) + 1, tid))
+    conn.execute("UPDATE subtareas SET orden=?, padre_id=NULL WHERE tarea_id=? AND es_entregable=1", (len(lista) + 1, tid))
+    recalcular_madres(conn, tid, ahora)
     return nuevas, quitadas
 
 
@@ -485,8 +612,9 @@ def definir_entregable(conn, tid, texto):
 
 
 def avance_texto(conn, tid):
-    total, hechas = conn.execute("SELECT COUNT(*), COALESCE(SUM(completada),0) FROM subtareas WHERE tarea_id=?",
-                                 (tid,)).fetchone()
+    total, hechas = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(completada),0) FROM subtareas s WHERE tarea_id=? "
+        "AND NOT EXISTS (SELECT 1 FROM subtareas h WHERE h.padre_id = s.id)", (tid,)).fetchone()
     return f"{hechas}/{total} · {round(100 * hechas / total) if total else 0}%"
 
 
@@ -680,7 +808,7 @@ def api_preparar_duplicado(tid):
         "descripcion": t["descripcion"], "prioridad": t["prioridad"], "categoria": t["categoria"],
         "fecha_limite": t["fecha_limite"], "estimado_min": t["estimado_min"], "meta_id": t["meta_id"],
         "es_rana": t["es_rana"],
-        "subtareas": [{"titulo": s["titulo"]} for s in t["subtareas"] if not s["es_entregable"]],
+        "subtareas": [{"titulo": s["titulo"], "nivel": s.get("nivel", 1)} for s in t["subtareas"] if not s["es_entregable"]],
         "entregable": t["entregable"],
         "dependencias": [dict(d, completa=d["completa"]) for d in t["dependencias"]],
         "duplicada_de": raiz["id"], "original": {"id": tid, "titulo": t["titulo"]},
@@ -1069,17 +1197,32 @@ def fila_subtarea(conn, sid):
 
 @app.post("/api/tareas/<int:tid>/subtareas")
 def api_crear_subtarea(tid):
-    titulo = (body().get("titulo") or "").strip()[:200]
+    """{"titulo": "...", "padre_id": 12 (opcional: la agrega debajo de esa subtarea, al final de sus hijas)}."""
+    d = body()
+    titulo = (d.get("titulo") or "").strip()[:200]
     if not titulo:
         raise ValueError("Escribe la subtarea.")
+    padre = int(d["padre_id"]) if d.get("padre_id") not in (None, "") else None
+    ahora = db.ahora()
     with db.conexion() as conn:
         fila_tarea(conn, tid)
-        orden = conn.execute("SELECT COALESCE(MAX(orden),0)+1 FROM subtareas WHERE tarea_id=? AND es_entregable=0",
-                             (tid,)).fetchone()[0]
-        conn.execute("INSERT INTO subtareas (tarea_id, titulo, orden, creada_en) VALUES (?,?,?,?)",
-                     (tid, titulo, orden, db.ahora()))
-        conn.execute("UPDATE subtareas SET orden=? WHERE tarea_id=? AND es_entregable=1", (orden + 1, tid))
-        registrar_evento(conn, tid, "subtareas", None, None, f"Agregó «{titulo}» · avance {avance_texto(conn, tid)}")
+        if padre:
+            p = conn.execute("SELECT * FROM subtareas WHERE id=? AND tarea_id=?", (padre, tid)).fetchone()
+            if not p:
+                raise ValueError("La subtarea madre no existe en esta tarea.")
+            if p["es_entregable"]:
+                raise ValueError("El entregable no puede tener subtareas.")
+            nivel_madre = len(ruta_subtarea(conn, padre).split(" › "))
+            if nivel_madre >= MAX_NIVEL_SUB:
+                raise ValueError(f"Máximo {MAX_NIVEL_SUB} niveles de subtareas.")
+            if conn.execute("SELECT 1 FROM sesiones WHERE subtarea_id=? AND fin IS NULL", (padre,)).fetchone():
+                cerrar_sesion_subtarea(conn, padre, ahora)  # el tiempo sigue en sus hijas
+        orden = conn.execute("SELECT COALESCE(MAX(orden),0)+1 FROM subtareas WHERE tarea_id=?", (tid,)).fetchone()[0]
+        sid = conn.execute("INSERT INTO subtareas (tarea_id, titulo, orden, creada_en, padre_id) VALUES (?,?,?,?,?)",
+                           (tid, titulo, orden, ahora, padre)).lastrowid
+        renumerar_subtareas(conn, tid)
+        registrar_evento(conn, tid, "subtareas", None, None, f"Agregó «{ruta_subtarea(conn, sid)}» · avance {avance_texto(conn, tid)}")
+        recalcular_madres(conn, tid, ahora)
         return jsonify(obtener_tarea(conn, tid)), 201
 
 
@@ -1091,6 +1234,8 @@ def api_editar_subtarea(sid):
         s = fila_subtarea(conn, sid)
         tid = s["tarea_id"]
         antes = ids_bloqueadas(conn)
+        nombre = ruta_subtarea(conn, sid)
+        debajo = descendientes(conn, sid)
         if (d.get("titulo") or "").strip():
             conn.execute("UPDATE subtareas SET titulo=? WHERE id=?", (d["titulo"].strip()[:200], sid))
         if "novedad" in d:
@@ -1106,29 +1251,44 @@ def api_editar_subtarea(sid):
                              (texto, ahora, sid))
                 conn.execute("UPDATE tareas SET iniciada_en=COALESCE(iniciada_en, ?), actualizada_en=? WHERE id=?", (ahora, ahora, tid))
                 registrar_evento(conn, tid, "novedad", None, None,
-                                 f"● Novedad en «{s['titulo']}»: {texto}" + (f" · sesión de {mins:.0f} min" if mins else ""))
+                                 f"● Novedad en «{nombre}»: {texto}" + (f" · sesión de {mins:.0f} min" if mins else ""))
             elif s["novedad"]:
                 conn.execute("UPDATE subtareas SET novedad=NULL, novedad_en=NULL WHERE id=?", (sid,))
-                registrar_evento(conn, tid, "novedad_resuelta", None, None, f"Novedad resuelta en «{s['titulo']}»: {s['novedad']}")
+                registrar_evento(conn, tid, "novedad_resuelta", None, None, f"Novedad resuelta en «{nombre}»: {s['novedad']}")
         if "completada" in d and bool(d["completada"]) != bool(s["completada"]):
             hecha = bool(d["completada"])
             if hecha and s["novedad"]:
                 conn.execute("UPDATE subtareas SET novedad=NULL, novedad_en=NULL WHERE id=?", (sid,))
-                registrar_evento(conn, tid, "novedad_resuelta", None, None, f"Novedad resuelta en «{s['titulo']}»: {s['novedad']}")
+                registrar_evento(conn, tid, "novedad_resuelta", None, None, f"Novedad resuelta en «{nombre}»: {s['novedad']}")
             if hecha:
                 mins = cerrar_sesion_subtarea(conn, sid, ahora)
                 if mins and not conn.execute("SELECT 1 FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchone():
                     conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=? AND estado='en_progreso'", (ahora, tid))
                     registrar_evento(conn, tid, "pausada", "en_progreso", "pausada",
-                                     f"Subtarea «{s['titulo']}» completada · sesión de {mins:.0f} min")
+                                     f"Subtarea «{nombre}» completada · sesión de {mins:.0f} min")
             conn.execute("UPDATE subtareas SET completada=?, completada_en=? WHERE id=?",
                          (int(hecha), ahora if hecha else None, sid))
+            # Madre: completarla cierra todas sus subtareas; desmarcarla las reabre.
+            n_debajo = 0
+            for h in debajo:
+                fila_h = conn.execute("SELECT completada FROM subtareas WHERE id=?", (h,)).fetchone()
+                if bool(fila_h["completada"]) == hecha:
+                    continue
+                n_debajo += 1
+                if hecha:
+                    cerrar_sesion_subtarea(conn, h, ahora)
+                    conn.execute("UPDATE subtareas SET completada=1, completada_en=?, novedad=NULL, novedad_en=NULL WHERE id=?", (ahora, h))
+                else:
+                    conn.execute("UPDATE subtareas SET completada=0, completada_en=NULL WHERE id=?", (h,))
+            if n_debajo and hecha and not conn.execute("SELECT 1 FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchone():
+                conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=? AND estado='en_progreso'", (ahora, tid))
             if hecha:  # avanzar en una subtarea cuenta como haber empezado la tarea
                 conn.execute("UPDATE tareas SET iniciada_en=COALESCE(iniciada_en, ?), actualizada_en=? WHERE id=?",
                              (ahora, ahora, tid))
             etiqueta = "📦 Entregable " if s["es_entregable"] else ""
             registrar_evento(conn, tid, "subtarea_completada" if hecha else "subtarea_reabierta", None, None,
-                             f"{'✓' if hecha else '↺'} {etiqueta}«{s['titulo']}» · avance {avance_texto(conn, tid)}")
+                             f"{'✓' if hecha else '↺'} {etiqueta}«{nombre}»"
+                             + (f" y sus {n_debajo} subtarea(s)" if n_debajo else "") + f" · avance {avance_texto(conn, tid)}")
         # Corregir la fecha de completado (por si se terminó antes de marcarla)
         if d.get("completada_en"):
             fila = conn.execute("SELECT completada, completada_en FROM subtareas WHERE id=?", (sid,)).fetchone()
@@ -1140,11 +1300,13 @@ def api_editar_subtarea(sid):
                 conn.execute("UPDATE tareas SET iniciada_en=CASE WHEN iniciada_en IS NULL OR iniciada_en > ? THEN ? "
                              "ELSE iniciada_en END, actualizada_en=? WHERE id=?", (nueva, nueva, ahora, tid))
                 registrar_evento(conn, tid, "editada", None, None,
-                                 f"Fecha de la subtarea «{s['titulo']}»: "
+                                 f"Fecha de la subtarea «{nombre}»: "
                                  f"{(fila['completada_en'] or '—').replace('T', ' ')[:16]} → {nueva.replace('T', ' ')[:16]}")
+        if "completada" in d or "novedad" in d:
+            recalcular_madres(conn, tid, ahora)
         res = obtener_tarea(conn, tid)
         res["desbloqueadas"] = registrar_cambios_bloqueo(
-            conn, antes, f"{'se completó' if d.get('completada') else 'se desmarcó'} la subtarea «{s['titulo']}»")
+            conn, antes, f"{'se completó' if d.get('completada') else 'se desmarcó'} la subtarea «{nombre}»")
         return jsonify(res)
 
 
@@ -1159,10 +1321,13 @@ def cerrar_sesion_subtarea(conn, sid, momento):
 
 def sesion_recien_cerrada(conn, tid, momento):
     """La sesión que se acaba de cerrar al pausar (para pedir qué se hizo en ella)."""
-    r = conn.execute("SELECT s.id, s.inicio, s.fin, s.minutos, st.titulo AS subtarea FROM sesiones s "
-                     "LEFT JOIN subtareas st ON st.id = s.subtarea_id WHERE s.tarea_id=? AND s.fin=? "
-                     "ORDER BY s.id DESC LIMIT 1", (tid, momento)).fetchone()
-    return dict(r) if r else None
+    r = conn.execute("SELECT s.id, s.inicio, s.fin, s.minutos, s.subtarea_id FROM sesiones s "
+                     "WHERE s.tarea_id=? AND s.fin=? ORDER BY s.id DESC LIMIT 1", (tid, momento)).fetchone()
+    if not r:
+        return None
+    r = dict(r)
+    r["subtarea"] = ruta_subtarea(conn, r.pop("subtarea_id")) if r.get("subtarea_id") else None
+    return r
 
 
 def texto_novedad(valor):
@@ -1181,15 +1346,18 @@ def api_accion_subtarea(sid):
         s = fila_subtarea(conn, sid)
         tid = s["tarea_id"]
         t = fila_tarea(conn, tid)
+        nombre = ruta_subtarea(conn, sid)
         if accion == "iniciar":
             if s["completada"]:
                 raise ValueError("La subtarea ya está completada.")
+            if conn.execute("SELECT 1 FROM subtareas WHERE padre_id=? AND completada=0", (sid,)).fetchone():
+                raise ValueError(f"«{s['titulo']}» tiene subtareas: inicia el tiempo con ▶ en la que vas a trabajar.")
             if t["estado"] not in ABIERTOS:
                 raise ValueError("La tarea está cerrada: reábrela para seguir trabajando en ella.")
             if s["id"] in tiempos_por_subtarea(conn, tid)[1]:
                 return jsonify(obtener_tarea(conn, tid))  # ya estaba corriendo
             # Una cosa a la vez: se pausa cualquier otra tarea y cualquier otra subtarea de esta tarea.
-            pausar_lo_que_corre(conn, ahora, f"al iniciar «{s['titulo']}»", excepto_tarea=tid)
+            pausar_lo_que_corre(conn, ahora, f"al iniciar «{nombre}»", excepto_tarea=tid)
             previo = conn.execute("SELECT s.subtarea_id, st.titulo FROM sesiones s LEFT JOIN subtareas st ON st.id=s.subtarea_id "
                                   "WHERE s.tarea_id=? AND s.fin IS NULL", (tid,)).fetchone()
             mins_prev = cerrar_sesion(conn, tid, ahora)
@@ -1197,7 +1365,7 @@ def api_accion_subtarea(sid):
             conn.execute("UPDATE tareas SET estado='en_progreso', iniciada_en=COALESCE(iniciada_en, ?), "
                          "actualizada_en=? WHERE id=?", (ahora, ahora, tid))
             conn.execute("INSERT INTO sesiones (tarea_id, subtarea_id, inicio) VALUES (?,?,?)", (tid, sid, ahora))
-            detalle = f"En la subtarea «{s['titulo']}»"
+            detalle = f"En la subtarea «{nombre}»"
             if previo and previo["titulo"]:
                 detalle += f" · antes «{previo['titulo']}» ({mins_prev:.0f} min)"
             registrar_evento(conn, tid, tipo if t["estado"] != "en_progreso" else "iniciada", t["estado"], "en_progreso", detalle)
@@ -1207,7 +1375,7 @@ def api_accion_subtarea(sid):
             mins = cerrar_sesion_subtarea(conn, sid, ahora)
             if not conn.execute("SELECT 1 FROM sesiones WHERE tarea_id=? AND fin IS NULL", (tid,)).fetchone():
                 conn.execute("UPDATE tareas SET estado='pausada', actualizada_en=? WHERE id=?", (ahora, tid))
-            registrar_evento(conn, tid, "pausada", "en_progreso", "pausada", f"Subtarea «{s['titulo']}» · sesión de {mins:.0f} min")
+            registrar_evento(conn, tid, "pausada", "en_progreso", "pausada", f"Subtarea «{nombre}» · sesión de {mins:.0f} min")
             res = obtener_tarea(conn, tid)
             res["sesion_cerrada"] = sesion_recien_cerrada(conn, tid, ahora)
             return jsonify(res)
@@ -1230,7 +1398,7 @@ def api_nota_sesion(ses_id):
         if (r["nota"] or "") != nota:
             conn.execute("UPDATE sesiones SET nota=? WHERE id=?", (nota or None, ses_id))
             if nota:
-                donde = f"«{r['subtarea']}» · " if r["subtarea"] else ""
+                donde = f"«{ruta_subtarea(conn, r['subtarea_id'])}» · " if r["subtarea_id"] else ""
                 registrar_evento(conn, r["tarea_id"], "trabajo", None, None,
                                  f"📝 {donde}{(r['minutos'] or 0):.0f} min ({(r['inicio'] or '')[11:16]}–{(r['fin'] or '')[11:16]}): {nota}")
         return jsonify(dict(conn.execute("SELECT * FROM sesiones WHERE id=?", (ses_id,)).fetchone()))
@@ -1241,9 +1409,13 @@ def api_eliminar_subtarea(sid):
     with db.conexion() as conn:
         s = fila_subtarea(conn, sid)
         antes = ids_bloqueadas(conn)
-        conn.execute("DELETE FROM subtareas WHERE id=?", (sid,))
+        nombre, debajo = ruta_subtarea(conn, sid), descendientes(conn, sid)
+        for x in debajo + [sid]:
+            conn.execute("DELETE FROM subtareas WHERE id=?", (x,))
         registrar_evento(conn, s["tarea_id"], "subtareas", None, None,
-                         f"Quitó «{s['titulo']}» · avance {avance_texto(conn, s['tarea_id'])}")
+                         f"Quitó «{nombre}»" + (f" y sus {len(debajo)} subtarea(s)" if debajo else "")
+                         + f" · avance {avance_texto(conn, s['tarea_id'])}")
+        recalcular_madres(conn, s["tarea_id"], db.ahora())
         res = obtener_tarea(conn, s["tarea_id"])
         res["desbloqueadas"] = registrar_cambios_bloqueo(conn, antes, f"se quitó la subtarea «{s['titulo']}»")
         return jsonify(res)
@@ -1870,12 +2042,13 @@ def api_semana():
             fest.update(f)
             fuentes.add(fuente)
         tareas = {t["id"]: t for t in listar_tareas(conn, incluir_cerradas=True)}
+        rutas = mapa_rutas(conn)
         subtareas = conn.execute(
-            "SELECT s.titulo, s.completada_en, s.es_entregable, s.tarea_id, t.completada_en AS t_fin "
+            "SELECT s.id, s.titulo, s.completada_en, s.es_entregable, s.tarea_id, t.completada_en AS t_fin "
             "FROM subtareas s JOIN tareas t ON t.id=s.tarea_id "
             "WHERE t.eliminada=0 AND s.completada=1 AND s.completada_en >= ? AND s.completada_en < ?", rango).fetchall()
         sesiones = conn.execute(
-            "SELECT s.tarea_id, s.inicio, s.fin, s.minutos, s.nota, st.titulo AS sub_titulo FROM sesiones s "
+            "SELECT s.tarea_id, s.inicio, s.fin, s.minutos, s.nota, s.subtarea_id, st.titulo AS sub_titulo FROM sesiones s "
             "JOIN tareas t ON t.id=s.tarea_id LEFT JOIN subtareas st ON st.id=s.subtarea_id "
             "WHERE t.eliminada=0 AND s.inicio >= ? AND s.inicio < ?", rango).fetchall()
         comentarios = conn.execute(
@@ -1905,9 +2078,12 @@ def api_semana():
         t = tareas.get(s["tarea_id"])
         if t:
             por_dia[s["completada_en"][:10]]["subtareas"].append({
-                "titulo": s["titulo"], "es_entregable": bool(s["es_entregable"]), "hora": s["completada_en"][11:16],
+                "titulo": rutas.get(s["id"], s["titulo"]), "es_entregable": bool(s["es_entregable"]), "hora": s["completada_en"][11:16],
                 "tarea": breve(t)})
     for s in sesiones:
+        s = dict(s)
+        if s["subtarea_id"] in rutas:
+            s["sub_titulo"] = rutas[s["subtarea_id"]]
         ini = parse_dt(s["inicio"])
         m = s["minutos"] if s["minutos"] is not None else max(0, ((parse_dt(s["fin"]) or ahora) - ini).total_seconds() / 60)
         t = tareas.get(s["tarea_id"])
@@ -2298,7 +2474,7 @@ def api_ia_plan_dia():
             "avance_pct": t["progreso_pct"],
             "bloqueada_esperando": [x["titulo"] for x in t["dependencias"] if not x["completa"]] if t["bloqueada"] else None,
             "novedad": t["novedad"] or ([f"{x['titulo']}: {x['novedad']}" for x in t["novedades_sub"]] or None),
-            "subtareas_pendientes": [x["titulo"] for x in t["subtareas"] if not x["completada"]][:8],
+            "subtareas_pendientes": [x.get("ruta") or x["titulo"] for x in t["subtareas"] if not x["completada"] and not x.get("tiene_hijas")][:8],
         }))
     fin = ia.fin_jornada()
     sistema = ESTILO_IA + f"""
