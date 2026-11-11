@@ -687,9 +687,17 @@ function filtrarTareas() {
 function htmlListaTareas() {
   const lista = filtrarTareas();
   const todas = lista.length && lista.every((t) => st.expandidas.has(t.id));
-  return `<div class="lista-cab"><span class="sutil">${lista.length} tarea(s)</span>
-      ${lista.length ? `<button class="enlace" data-desplegar-todas="${todas ? '0' : '1'}">${todas ? '⌃ Contraer todas' : '⌄ Desplegar todas'}</button>` : ''}</div>`
-    + listaTareas(lista, '<span class="grande">🔍</span>No hay tareas con esos filtros.');
+  // La rana (abierta) siempre va arriba, en su propio bloque y separada de las demás.
+  const ranas = lista.filter((t) => t.es_rana && abierta(t));
+  const resto = lista.filter((t) => !ranas.includes(t));
+  const cab = `<div class="lista-cab"><span class="sutil">${lista.length} tarea(s)</span>
+      ${lista.length ? `<button class="enlace" data-desplegar-todas="${todas ? '0' : '1'}">${todas ? '⌃ Contraer todas' : '⌄ Desplegar todas'}</button>` : ''}</div>`;
+  if (!ranas.length) return cab + listaTareas(lista, '<span class="grande">🔍</span>No hay tareas con esos filtros.');
+  return cab + `<section class="bloque-rana">
+      <h3 class="bloque-rana-tit">🐸 ${ranas.length === 1 ? 'Tu rana' : 'Tus ranas'} <span>· la tarea más importante: hazla primero</span></h3>
+      ${listaTareas(ranas)}
+    </section>`
+    + (resto.length ? `<h3 class="lista-sep"><span>Demás tareas</span> <small>${resto.length}</small></h3>${listaTareas(resto)}` : '');
 }
 function pintarListaTareas() {
   const el = $('#lista-tareas');
