@@ -1911,7 +1911,8 @@ def api_estadisticas():
 
 
 # ───────────────────────── reporte de cumplimiento ─────────────────────────
-ORDEN_REPORTE = {"vencida": 0, "con_novedad": 1, "bloqueada": 2, "en_curso": 3, "pendiente": 4, "atrasada": 5, "a_tiempo": 6, "sin_fecha": 7}
+# Primero lo completado (en el orden en que se terminó), luego lo que requiere atención y lo que sigue abierto.
+ORDEN_REPORTE = {"a_tiempo": 0, "atrasada": 0, "sin_fecha": 0, "vencida": 1, "con_novedad": 2, "bloqueada": 3, "en_curso": 4, "pendiente": 5}
 
 
 def estado_reporte(t):
@@ -1992,8 +1993,8 @@ def api_reporte():
             "novedad": {"texto": t["novedad"], "fecha": t["novedad_en"]} if t.get("novedad") else None,
             "novedades_sub": [{"titulo": x["titulo"], "texto": x["novedad"], "fecha": x["novedad_en"]} for x in t["novedades_sub"]],
         })
-    actividades.sort(key=lambda a: (ORDEN_REPORTE[a["estado"]], a["prioridad"],
-                                    a["completada_en"] or a["fecha_limite"] or "9999"))
+    actividades.sort(key=lambda a: (ORDEN_REPORTE[a["estado"]], a["completada_en"] or "", a["prioridad"],
+                                    a["fecha_limite"] or "9999"))
 
     completadas = [a for a in actividades if a["estado"] in ("a_tiempo", "atrasada", "sin_fecha")]
     con_fecha = [a for a in completadas if a["estado"] != "sin_fecha"]
