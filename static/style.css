@@ -827,3 +827,6 @@ html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
   letter-spacing: .06em; text-transform: uppercase; color: var(--sutil); }
 .lista-sep::after { content: ""; flex: 1; height: 1px; background: var(--borde); }
 .lista-sep small { font-weight: 600; letter-spacing: 0; background: var(--superficie-2); border-radius: 999px; padding: 1px 8px; }
+
+/* Vista previa del correo HTML del reporte */
+.correo-vista { display: block; width: 100%; min-height: 420px; border: 1px solid var(--borde); border-radius: 12px; background: #f4f5f9; margin: 10px 0 4px; }

@@ -27,6 +27,7 @@ ia.cargar_env()  # antes de importar db: el .env también puede definir MIFOCO_D
 
 import db  # noqa: E402
 import festivos as festivos_co  # noqa: E402
+import habiles  # noqa: E402  (calendario hábil: sin sábados, domingos ni festivos)
 from frases import frase_aleatoria, frase_del_dia  # noqa: E402
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -60,10 +61,11 @@ def limite_dt(valor):
 
 
 def fmt_dur_dias(dias):
+    """Duración en tiempo hábil: «5 h», «1 día hábil», «2,5 días hábiles»."""
     if dias < 1:
         return f"{max(1, round(dias * 24))} h"
     v = round(dias, 1)
-    return f"{v:g}".replace(".", ",") + (" día" if v == 1 else " días")
+    return f"{v:g}".replace(".", ",") + (" día hábil" if v == 1 else " días hábiles")
 
 
 def cap(texto):
@@ -493,12 +495,14 @@ def serializar(row, totales, abiertas, subs=None, deps=None, coment=None, adj=No
     if lim and t["estado"] != "cancelada":
         ref = fin if t["estado"] == "completada" and fin else ahora
         if ref > lim:
-            t["dias_atraso"] = round((ref - lim).total_seconds() / 86400, 2)
+            # Atraso en tiempo hábil: los sábados, domingos y festivos no cuentan.
+            t["dias_atraso"] = round(habiles.dias_habiles(lim, ref), 2)
             t["vencida"] = t["estado"] in ABIERTOS
         if t["estado"] in ABIERTOS:
-            t["horas_restantes"] = round((lim - ahora).total_seconds() / 3600, 1)
+            t["horas_restantes"] = (round(habiles.horas_habiles(ahora, lim), 1) if lim > ahora
+                                    else -round((ahora - lim).total_seconds() / 3600, 1))
     creada = parse_dt(t["creada_en"])
-    t["ciclo_horas"] = round((fin - creada).total_seconds() / 3600, 2) if (creada and fin) else None
+    t["ciclo_horas"] = round(habiles.horas_habiles(creada, fin), 2) if (creada and fin) else None
     t["completada_a_tiempo"] = (fin <= lim) if (fin and lim and t["estado"] == "completada") else None
     for k in ("alerta_vencida", "eliminada", "eliminada_en"):
         t.pop(k, None)
@@ -512,6 +516,7 @@ SQL_TAREAS = (
 
 
 def listar_tareas(conn, incluir_cerradas=False):
+    habiles.cargar(conn)
     q = SQL_TAREAS
     if not incluir_cerradas:
         q += " AND t.estado IN ('pendiente','en_progreso','pausada')"
@@ -530,6 +535,7 @@ def fila_tarea(conn, tid):
 
 
 def obtener_tarea(conn, tid):
+    habiles.cargar(conn)
     r = conn.execute(SQL_TAREAS + " AND t.id=?", (tid,)).fetchone()
     if not r:
         abort(404, "Tarea no encontrada.")
@@ -1649,9 +1655,10 @@ def listar_metas(conn, meta_id=None):
         progreso = round(100 * sum(comps) / len(comps)) if comps else 0
         if m["estado"] == "lograda":
             progreso = 100
-        dias_rest = (date.fromisoformat(m["fecha_objetivo"]) - hoy).days if m["fecha_objetivo"] else None
+        # Días hábiles hasta la fecha objetivo; el ritmo semanal supone 5 días hábiles por semana.
+        dias_rest = habiles.contar_dias_habiles(hoy, date.fromisoformat(m["fecha_objetivo"])) if m["fecha_objetivo"] else None
         faltan = max(0.0, (m["horas_objetivo"] or 0) - horas)
-        ritmo = round(faltan / max(1.0, dias_rest / 7), 1) if (dias_rest is not None and dias_rest > 0) else None
+        ritmo = round(faltan / max(1.0, dias_rest / 5), 1) if (dias_rest is not None and dias_rest > 0) else None
         m.update(
             horas_acumuladas=round(horas, 1),
             horas_tareas=round(min_tareas / 60, 1),
@@ -1834,13 +1841,18 @@ def api_estadisticas():
         if p["fecha"] in apr_dia:
             apr_dia[p["fecha"]] += p["minutos"]
 
-    # Racha: días consecutivos (hasta hoy o ayer) con al menos una tarea completada.
+    # Racha: días HÁBILES seguidos con al menos una tarea completada. Los fines de semana y festivos no la
+    # cortan ni la suman (si completas algo un sábado, ese día sí suma). Cuenta hasta hoy o el hábil anterior.
     dias_con_logro = {t["completada_en"][:10] for t in tareas if t["estado"] == "completada" and t["completada_en"]}
     racha, cursor = 0, date.today()
     if cursor.isoformat() not in dias_con_logro:
-        cursor -= timedelta(days=1)
-    while cursor.isoformat() in dias_con_logro:
-        racha += 1
+        cursor -= timedelta(days=1)  # hoy todavía puede sumar: se empieza a contar desde ayer
+    limite_busqueda = cursor - timedelta(days=3650)
+    while cursor > limite_busqueda:
+        if cursor.isoformat() in dias_con_logro:
+            racha += 1
+        elif habiles.es_habil(cursor):
+            break
         cursor -= timedelta(days=1)
 
     por_prioridad = [{
@@ -2162,6 +2174,8 @@ def api_actualizar_festivos(anio):
     """Vuelve a consultar la API de festivos para ese año (por si antes no había conexión)."""
     with db.conexion() as conn:
         f, fuente = festivos_co.refrescar(conn, anio)
+        habiles.olvidar(anio)
+        habiles.cargar(conn, [anio])
     return jsonify(anio=anio, fuente=fuente, total=len(f))
 
 
@@ -2182,7 +2196,10 @@ def api_alertas():
                                 mensaje=f"«{t['titulo']}» lleva {fmt_dur_dias(t['dias_atraso'])} de atraso."))
         elif t["horas_restantes"] is not None and t["horas_restantes"] <= 24:
             h = t["horas_restantes"]
-            cuando = f"en {round(h * 60)} min" if h < 1 else f"en {h:.0f} h"
+            cuando = f"en {round(h * 60)} min" if h < 1 else f"en {h:.0f} h hábiles"
+            lim_dt = limite_dt(t["fecha_limite"])
+            if lim_dt and lim_dt.date() != date.today():
+                cuando += f" ({DIAS_SEMANA[lim_dt.weekday()].lower()} {lim_dt:%d/%m %H:%M})"
             alertas.append(dict(clave=f"pronto-{t['id']}-{t['fecha_limite']}", nivel="aviso",
                                 titulo="Vence pronto", tarea_id=t["id"],
                                 mensaje=f"«{t['titulo']}» vence {cuando}."))
@@ -2219,15 +2236,15 @@ def api_alertas():
             alertas.append(dict(clave=f"meta-vencida-{m['id']}", nivel="peligro", titulo="Meta de aprendizaje vencida",
                                 meta_id=m["id"],
                                 mensaje=f"{m['herramienta']}: la fecha objetivo pasó con {m['progreso_pct']}% de avance."))
-        elif dr is not None and dr <= 14 and m["progreso_pct"] < 70:
+        elif dr is not None and dr <= 10 and m["progreso_pct"] < 70:
             alertas.append(dict(clave=f"meta-riesgo-{m['id']}-{date.today()}", nivel="aviso",
                                 titulo="Meta en riesgo", meta_id=m["id"],
-                                mensaje=f"{m['herramienta']}: quedan {dr} días y vas en {m['progreso_pct']}%."))
+                                mensaje=f"{m['herramienta']}: quedan {dr} días hábiles y vas en {m['progreso_pct']}%."))
         ult = m["ultima_practica"]
-        if not ult or (date.today() - date.fromisoformat(ult)).days >= 7:
+        if not ult or habiles.contar_dias_habiles(date.fromisoformat(ult), date.today()) >= 5:
             alertas.append(dict(clave=f"meta-inactiva-{m['id']}-{date.today()}", nivel="info",
                                 titulo="Retoma tu aprendizaje", meta_id=m["id"],
-                                mensaje=f"No registras práctica de {m['herramienta']} hace 7 días o más."))
+                                mensaje=f"No registras práctica de {m['herramienta']} hace 5 días hábiles o más."))
     orden = {"peligro": 0, "aviso": 1, "info": 2}
     alertas.sort(key=lambda a: orden[a["nivel"]])
     return jsonify(alertas)
@@ -2366,6 +2383,19 @@ del correo, así que el texto no repite la tabla: la resume y destaca lo que req
         f" firmado por {autor}." if autor else " sin firma.")
     usuario = (f"Periodo: {r['desde']} a {r['hasta']}" + (f" · categoría {r['categoria']}" if r["categoria"] else "")
                + f"\nIndicadores: {_json(_limpio(r['kpis']))}\nActividades: {_json(acts)}")
+    if d.get("formato") == "html":
+        # Correo HTML gerencial: el detalle va en tablas del propio correo; la IA escribe lo ejecutivo.
+        sistema = ESTILO_IA + """
+Escribe las partes ejecutivas de un correo gerencial que reporta el cumplimiento de actividades. El correo ya muestra
+los indicadores, la lista de lo que requiere atención y la tabla de actividades, así que no repitas cifras sueltas.
+- asunto: corto, con el periodo y el resultado principal (p. ej. «Cumplimiento semana 46: 80 % del plan, 2 alertas»).
+- resumen: 2 o 3 frases para un gerente: estado general, lo más relevante logrado y el principal riesgo. Tercera
+  persona impersonal, sin saludo ni firma. Los atrasos se miden en días hábiles.
+- acciones: de 0 a 4 decisiones o apoyos concretos que se necesitan de quien lee (p. ej. «Confirmar la versión 8 del
+  plan de hitos para cerrar la conformidad de carpetas de la U108»). Solo si se deducen de las novedades, vencidas o
+  bloqueos; lista vacía si no hay."""
+        esquema = ia.objeto({"asunto": ia.TEXTO, "resumen": ia.TEXTO, "acciones": {"type": "array", "items": ia.TEXTO}})
+        return jsonify(ia.chat(sistema, usuario, esquema={"nombre": "correo_html", "schema": esquema}))
     return jsonify(ia.chat(sistema, usuario, esquema={"nombre": "correo", "schema": ia.objeto({"asunto": ia.TEXTO, "cuerpo": ia.TEXTO})}))
 
 
@@ -2537,7 +2567,7 @@ Texto plano, sin Markdown:
 - «Para las próximas dos semanas:» 3 acciones concretas y medibles.
 Si un dato no alcanza para concluir algo, no lo concluyas.
 Glosario: puntaje 0-100 = 40 % entregas a tiempo + 30 % cumplimiento (completadas/creadas) + 20 % foco en A+B +
-10 % precisión de estimación; ratio_real_vs_estimado > 1 significa que tarda más de lo estimado."""
+10 % precisión de estimación; ratio_real_vs_estimado > 1 significa que tarda más de lo estimado; el atraso, el ciclo y la racha se miden en días hábiles (sin sábados, domingos ni festivos de Colombia)."""
     usuario = (f"Periodo: últimos {dias} días.\nMétricas: {_json(s)}\nPor semana: {_json(list(semanas.values()))}\n"
                f"Por categoría: {_json(por_cat)}")
     return jsonify(texto=ia.chat(sistema, usuario))

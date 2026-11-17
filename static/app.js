@@ -91,10 +91,11 @@ function fmtMin(m) {
   const h = Math.floor(m / 60), r = m % 60;
   return `${h} h${r ? ' ' + r + ' min' : ''}`;
 }
+/** Duración en tiempo HÁBIL (sin sábados, domingos ni festivos): «5 h», «2,5 d háb.». */
 function fmtDias(d) {
   if (d == null) return '—';
   if (d < 1) return `${Math.max(1, Math.round(d * 24))} h`;
-  return `${String(Number(d.toFixed(1))).replace('.', ',')} d`;
+  return `${String(Number(d.toFixed(1))).replace('.', ',')} d háb.`;
 }
 const abierta = (t) => ABIERTOS.includes(t.estado);
 function ordenPrioridad(a, b) {
@@ -725,7 +726,7 @@ function tarjetaMeta(m) {
   const puntos = [1, 2, 3, 4, 5].map((n) => `<span class="punto ${n <= m.nivel_actual ? 'lleno' : ''} ${n === m.nivel_objetivo ? 'meta' : ''}"></span>`).join('');
   const estadoChip = m.estado === 'lograda' ? '<span class="chip verde">🏆 Lograda</span>' : m.estado === 'pausada' ? '<span class="chip">Pausada</span>' : '';
   let plazo = 'Sin fecha';
-  if (m.dias_restantes != null) plazo = m.dias_restantes < 0 ? `Venció hace ${-m.dias_restantes} d` : `${m.dias_restantes} días`;
+  if (m.dias_restantes != null) plazo = m.dias_restantes < 0 ? `Venció hace ${-m.dias_restantes} d háb.` : `${m.dias_restantes} días hábiles`;
   return `<div class="tarjeta">
     <div class="meta-cab">
       <div><h3>${esc(m.herramienta)}</h3><span class="sutil">${esc(m.categoria || '')}${m.fecha_objetivo ? ' · meta ' + fmtFecha(m.fecha_objetivo, false) : ''}</span> ${estadoChip}</div>
@@ -802,15 +803,15 @@ async function vistaRendimiento() {
       </div>
       <div class="rejilla r2">
         ${kpi(s.completadas, 'Completadas', `${s.creadas} creadas · ${s.canceladas} canceladas · ${s.subtareas_completadas} subtareas ✓`, 'verde')}
-        ${kpi(`${s.racha_dias} 🔥`, 'Racha de días', 'con al menos 1 tarea completada')}
+        ${kpi(`${s.racha_dias} 🔥`, 'Racha de días hábiles', 'seguidos con al menos 1 tarea completada (fines de semana y festivos no la cortan)')}
         ${kpi(fmtMin(s.minutos_foco), 'Tiempo de foco', `+ ${fmtMin(s.minutos_aprendizaje)} de práctica`, 'azul')}
         ${kpi(s.ranas_completadas + ' 🐸', 'Ranas comidas')}
       </div>
     </div>
     <div class="rejilla r4 mt">
       ${kpi(`${s.a_tiempo} / ${s.a_tiempo + s.tarde}`, 'Entregas a tiempo', 'de las que tenían fecha límite')}
-      ${kpi(s.promedio_atraso_dias != null ? fmtDias(s.promedio_atraso_dias) : '—', 'Atraso promedio', 'en las que se entregaron tarde', s.tarde ? 'rojo' : '')}
-      ${kpi(s.promedio_ciclo_horas != null ? fmtDias(s.promedio_ciclo_horas / 24) : '—', 'Ciclo promedio', 'desde creada hasta completada')}
+      ${kpi(s.promedio_atraso_dias != null ? fmtDias(s.promedio_atraso_dias) : '—', 'Atraso promedio', 'en días hábiles, de las que se entregaron tarde', s.tarde ? 'rojo' : '')}
+      ${kpi(s.promedio_ciclo_horas != null ? fmtDias(s.promedio_ciclo_horas / 24) : '—', 'Ciclo promedio', 'de creada a completada, en días hábiles')}
       ${kpi(ratio, 'Real vs. estimado', ratioTxt)}
     </div>
     <div class="rejilla r4 mt">
