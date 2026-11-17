@@ -389,15 +389,19 @@ function pintarCorreoHTML() {
   const ya = !!$('#rpt-correo-vista');
   if (!ya) {
     caja.innerHTML = `<div class="rpt-correo">
-      <h3>✉ Correo HTML <small class="sutil">listo para pegar en Outlook o Gmail</small></h3>
+      <h3>✉ Correo HTML <small class="sutil">se abre como correo nuevo en Outlook, listo para enviar</small></h3>
+      <div class="correo-dest">
+        <label>Para <input id="rpt-para" value="${esc(correoDest('para'))}" placeholder="correo@empresa.com; otro@empresa.com" autocomplete="email"></label>
+        <label>CC <input id="rpt-cc" value="${esc(correoDest('cc'))}" placeholder="Opcional" autocomplete="email"></label>
+      </div>
       <label>Asunto<div class="fila-copiar"><input id="rpt-asunto" value="${esc(asunto)}">
         <button type="button" class="mini" data-ia-copiar="#rpt-asunto" data-ia-msg="📋 Asunto copiado">📋</button></div></label>
       <iframe id="rpt-correo-vista" title="Vista previa del correo" class="correo-vista"></iframe>
       <div class="botones">
-        <span class="ayuda" style="margin-right:auto">Copia y pega en un correo nuevo (Ctrl + V). ${st.ia.activa ? '' : 'El resumen se arma con los indicadores.'}</span>
+        <span class="ayuda" style="margin-right:auto">«Abrir en el correo» crea un correo nuevo en HTML en Outlook (con tu firma) para que lo revises y lo envíes. ${st.ia.activa ? '' : 'El resumen se arma con los indicadores.'}</span>
         ${st.ia.activa ? '<button type="button" class="ia-btn" data-rpt-correo-ia title="La IA escribe el asunto, el resumen ejecutivo y las decisiones requeridas">✨ Resumen ejecutivo</button>' : ''}
-        <button type="button" class="secundario" data-rpt-correo-descargar>⬇ Descargar .html</button>
-        <button type="button" class="primario" data-rpt-correo-copiar>📋 Copiar correo</button>
+        <button type="button" class="secundario" data-rpt-correo-copiar title="Copiar con formato para pegar con Ctrl + V">📋 Copiar</button>
+        <button type="button" class="primario" data-rpt-correo-abrir>✉ Abrir en el correo</button>
       </div>
     </div>`;
     caja.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -427,6 +431,25 @@ async function copiarCorreoHTML() {
       toast('📋 Correo copiado: pégalo en un correo nuevo con Ctrl + V', 'exito');
     } catch { toast('El navegador no permitió copiar. Usa «Descargar .html».', 'error'); }
   }
+}
+
+/* Destinatarios recordados en este navegador */
+function correoDest(campo) { try { return localStorage.getItem(`mifoco-correo-${campo}`) || ''; } catch { return ''; } }
+function guardarDest(campo, valor) { try { localStorage.setItem(`mifoco-correo-${campo}`, valor); } catch { /* sin almacenamiento */ } }
+
+async function abrirCorreoHTML(boton) {
+  if (!rptState.correo) return;
+  const para = $('#rpt-para').value.trim(), cc = $('#rpt-cc').value.trim();
+  const antes = boton.innerHTML;
+  boton.disabled = true; boton.innerHTML = '<span class="giro"></span> Abriendo…';
+  try {
+    const r = await api('/api/correo/abrir', { method: 'POST', body: {
+      asunto: $('#rpt-asunto').value.trim(), html: rptState.correo, texto: correoTexto(rptState.datos, correoState), para, cc } });
+    guardarDest('para', para); guardarDest('cc', cc);
+    toast(r.metodo === 'outlook' ? '✉ Correo nuevo abierto en Outlook: revísalo y envíalo'
+      : '✉ Borrador abierto en tu programa de correo: revísalo y envíalo', 'exito');
+  } catch (err) { toast(err.message, 'error'); }
+  finally { if (boton.isConnected) { boton.disabled = false; boton.innerHTML = antes; } }
 }
 
 function descargarCorreoHTML() {
@@ -517,10 +540,11 @@ function descargarReporte() {
 
 let rptTemporizador;
 document.addEventListener('click', (e) => {
-  const b = e.target.closest('[data-rpt-rango], [data-rpt-copiar], [data-rpt-descargar], [data-rpt-correo], [data-rpt-correo-copiar], [data-rpt-correo-descargar], [data-rpt-correo-ia]');
+  const b = e.target.closest('[data-rpt-rango], [data-rpt-copiar], [data-rpt-descargar], [data-rpt-correo], [data-rpt-correo-copiar], [data-rpt-correo-descargar], [data-rpt-correo-ia], [data-rpt-correo-abrir]');
   if (!b) return;
   if (b.dataset.rptCorreo !== undefined) { Object.assign(correoState, { resumen: '', acciones: [], asunto: '' }); pintarCorreoHTML(); return; }
   if (b.dataset.rptCorreoCopiar !== undefined) { copiarCorreoHTML(); return; }
+  if (b.dataset.rptCorreoAbrir !== undefined) { abrirCorreoHTML(b); return; }
   if (b.dataset.rptCorreoDescargar !== undefined) { descargarCorreoHTML(); return; }
   if (b.dataset.rptCorreoIa !== undefined) { resumenEjecutivoIA(b).catch((err) => toast(err.message, 'error')); return; }
   if (b.dataset.rptRango) {

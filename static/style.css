@@ -830,3 +830,5 @@ html.tema-oscuro .btn-tema .luna { transform: none; opacity: 1; }
 
 /* Vista previa del correo HTML del reporte */
 .correo-vista { display: block; width: 100%; min-height: 420px; border: 1px solid var(--borde); border-radius: 12px; background: #f4f5f9; margin: 10px 0 4px; }
+.correo-dest { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
+@media (max-width: 640px) { .correo-dest { grid-template-columns: 1fr; } }

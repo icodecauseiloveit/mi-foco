@@ -28,6 +28,7 @@ ia.cargar_env()  # antes de importar db: el .env también puede definir MIFOCO_D
 import db  # noqa: E402
 import festivos as festivos_co  # noqa: E402
 import habiles  # noqa: E402  (calendario hábil: sin sábados, domingos ni festivos)
+import correo as correo_local  # noqa: E402  (abrir un correo HTML en Outlook / programa de correo)
 from frases import frase_aleatoria, frase_del_dia  # noqa: E402
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -2607,6 +2608,36 @@ Escribe la frase del día al estilo de Brian Tracy (Eat That Frog, método ABCDE
                      (clave, json.dumps(r, ensure_ascii=False), db.ahora()))
         conn.execute("DELETE FROM ia_cache WHERE clave LIKE 'frase-%' AND clave < ?", (f"frase-{(hoy - timedelta(days=30)).isoformat()}",))
     return jsonify(r)
+
+
+# ───────────────────────── abrir correo HTML en el programa de correo ─────────────────────────
+RE_CORREO = re.compile(r"^[^@\s;,]+@[^@\s;,]+\.[^@\s;,]+$")
+
+
+def limpiar_destinatarios(valor):
+    partes = [x.strip() for x in re.split(r"[;,]", valor or "") if x.strip()]
+    malos = [x for x in partes if not RE_CORREO.match(x)]
+    if malos:
+        raise ValueError("Revisa estas direcciones de correo: " + ", ".join(malos))
+    return "; ".join(partes)
+
+
+@app.post("/api/correo/abrir")
+def api_abrir_correo():
+    """Abre un correo NUEVO en HTML en el programa de correo de este PC: {asunto, html, texto?, para?, cc?}.
+    Con Outlook clásico lo crea directamente (con tu firma); si no, abre un borrador .eml."""
+    d = body()
+    asunto = (d.get("asunto") or "").strip()[:250]
+    html = d.get("html") or ""
+    if not asunto:
+        raise ValueError("Escribe el asunto del correo.")
+    if not html.strip():
+        raise ValueError("No hay contenido para el correo.")
+    if len(html) > 5 * 1024 * 1024:
+        raise ValueError("El correo es demasiado grande.")
+    metodo, detalle = correo_local.abrir_correo(asunto, html, (d.get("texto") or "")[:200000],
+                                                limpiar_destinatarios(d.get("para")), limpiar_destinatarios(d.get("cc")))
+    return jsonify(metodo=metodo, detalle=detalle)
 
 
 # ───────────────────────── otros ─────────────────────────
