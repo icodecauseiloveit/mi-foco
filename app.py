@@ -2267,6 +2267,15 @@ def _json(x):
     return json.dumps(x, ensure_ascii=False, separators=(",", ":"))
 
 
+RE_CORREO_TXT = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
+RE_ENLACE_TXT = re.compile(r"(https?://|www\.)\S+", re.I)
+
+
+def _sin_datos(texto):
+    """Quita correos y enlaces de un texto libre antes de enviarlo a la IA."""
+    return RE_ENLACE_TXT.sub("[enlace]", RE_CORREO_TXT.sub("[correo]", texto or ""))
+
+
 def _limpio(d):
     """Quita campos vacíos para no gastar tokens en ellos."""
     return {k: v for k, v in d.items() if v is not None and not (isinstance(v, (str, list, dict)) and not v)}
@@ -2318,44 +2327,35 @@ def api_ia_resumen_semanal():
                                    for t in x["completadas"]],
             "subtareas_completadas": [f"{v['titulo']} (de «{v['tarea']['titulo']}»)" for v in x["subtareas"]],
             "tareas_trabajadas": [_limpio({"tarea": t["titulo"], "subtareas": [v["titulo"] for v in t["por_subtarea"]],
-                                           "que_se_hizo": [n["nota"] for n in t["notas"]]}) for t in x["trabajadas"]],
-            "comentarios": [f"«{c['tarea']['titulo']}»: {c['texto']}" for c in x["comentarios"]],
-            "novedades": [f"{'RESUELTA' if n['resuelta'] else 'ABIERTA'} en «{n['tarea']['titulo']}»: {n['texto']}"
+                                           "que_se_hizo": [_sin_datos(n["nota"]) for n in t["notas"]]}) for t in x["trabajadas"]],
+            "comentarios": [f"«{c['tarea']['titulo']}»: {_sin_datos(c['texto'])}" for c in x["comentarios"]],
+            "novedades": [f"{'RESUELTA' if n['resuelta'] else 'ABIERTA'} en «{n['tarea']['titulo']}»: {_sin_datos(n['texto'])}"
                           for n in x["novedades"]],
-            "aprendizaje": [p["meta"] + (f": {p['nota']}" if p["nota"] else "") for p in x["practica"]],
+            "aprendizaje": [p["meta"] + (f": {_sin_datos(p['nota'])}" if p["nota"] else "") for p in x["practica"]],
         })
         if len(item) > 1 and set(item) != {"dia", "festivo"}:
             dias.append(item)
     if not dias:
         raise ValueError("Esa semana no tiene actividad registrada para resumir.")
-    # Para qué sirve cada tarea trabajada: así la IA puede destacar el aporte al objetivo sin inventarlo.
-    ids = {t["id"] for x in s["dias"] for t in x["completadas"] + x["trabajadas"]}
-    ids |= {v["tarea"]["id"] for x in s["dias"] for v in x["subtareas"] + x["comentarios"] + x["novedades"]}
-    with db.conexion() as conn:
-        objetivos = [_limpio({"tarea": t["titulo"], "categoria": t["categoria"], "descripcion": (t["descripcion"] or "")[:300],
-                              "entregable": t["entregable"]})
-                     for t in listar_tareas(conn, incluir_cerradas=True) if t["id"] in ids]
     sistema = ESTILO_IA + """
-Redacta el reporte semanal de trabajo para quien hace seguimiento.
+Redacta el resumen semanal de trabajo para quien hace seguimiento. Debe ser BREVE y concreto.
 - Un párrafo por cada día con actividad, en orden, que empieza EXACTAMENTE con el valor de «dia» seguido de dos puntos
   (p. ej. «Sem46-Lunes: …»). Los días sin actividad no se mencionan.
-- Cada párrafo tiene alrededor de 70 palabras (entre 55 y 85): muy concreto y profesional, en tercera persona
-  impersonal y en pasado. Sin títulos, viñetas, Markdown ni saludos.
-- En cada día di en qué tareas y subtareas se trabajó, los logros, los obstáculos o novedades encontrados y cualquier
-  otro dato pertinente, y destaca el aporte de ese trabajo al objetivo del proyecto (apóyate en la descripción, el
-  entregable y la categoría de la tarea y en el contexto del usuario; si no hay datos del objetivo, no lo inventes).
-- Resume: nombra lo esencial y omite los detalles menores (no enumeres carpetas, campos o versiones uno por uno salvo
-  que sean el obstáculo principal).
-- No menciones tiempos (minutos, horas, duración de sesiones) ni porcentajes.
-- No agregues valoraciones ni próximos pasos que no estén en los datos; si algo queda abierto, dilo en una frase.
+- Cada párrafo tiene alrededor de 35 palabras (entre 20 y 45), en tercera persona impersonal y en pasado. Sin
+  títulos, viñetas, Markdown ni saludos.
+- Di solo tres cosas: qué se hizo, qué se logró y qué quedó pendiente (con su causa en pocas palabras, si la hay).
+- Sin redundancias entre días: no repitas el contexto ni lo ya dicho en días anteriores; si un trabajo continúa, di
+  solo lo nuevo (p. ej. «Se completó la configuración iniciada el lunes»). Si un día no aporta nada nuevo, una frase basta.
+- Confidencialidad: habla del trabajo en términos generales (p. ej. «la configuración del evento», «la revisión
+  documental», «el plan de hitos»). NO incluyas nombres de personas, correos, enlaces, nombres de archivos o carpetas,
+  códigos de unidades o equipos, números de versión ni cifras internas.
+- No menciones tiempos (minutos, horas) ni porcentajes. No agregues valoraciones ni próximos pasos que no estén en los datos.
 
-Ejemplo del tono y la extensión esperados para un día:
-Sem46-Lunes: Se avanzó en el Setup STO Event de las unidades U108 y U109, dejando configurados los datos base del
-evento, lo que habilita el seguimiento de la parada PHD en la herramienta. En la conformidad de carpetas de la U108 se
-identificaron tres pendientes en SharePoint, entre ellos la falta de la versión vigente del plan de hitos; la subtarea
-queda abierta hasta recibir el documento actualizado."""
+Ejemplo del tono y la extensión esperados:
+Sem46-Lunes: Se avanzó en la configuración del evento en la herramienta de seguimiento y quedaron listos los datos
+base. En la revisión documental se detectaron carpetas incompletas; queda pendiente cargar la versión vigente del plan.
+Sem46-Martes: Se completó la configuración iniciada el lunes. La revisión documental sigue a la espera del plan actualizado."""
     usuario = (f"Semana {s['semana']} de {s['anio']} (lunes {s['desde']} a domingo {s['hasta']}).\n"
-               f"Tareas involucradas y su propósito: {_json(objetivos)}\n"
                f"Actividad por día: {_json(dias)}")
     return jsonify(texto=ia.chat(sistema, usuario))
 
