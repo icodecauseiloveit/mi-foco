@@ -972,6 +972,7 @@ async function render() {
     window.scrollTo(0, 0);
   }
   st.vistaPintada = st.vista;
+  pintarFecha();
 }
 
 async function refrescar() { await render(); revisarAlertas(); }
@@ -1746,6 +1747,12 @@ document.addEventListener('click', async (e) => {
       await api(`/api/tareas/${d.eliminar}`, { method: 'DELETE' });
       toast('Tarea eliminada'); return refrescar();
     }
+    if (d.irSemana) {
+      const [anio, semana] = d.irSemana.split('-').map(Number);
+      Object.assign(st.hist, { tab: 'semana', anio, semana });
+      st.vista = 'historial';
+      return render();
+    }
     if (d.iaPlan !== undefined) return iaPlanDia();
     if (d.iaAnalisis !== undefined) return iaAnalisis();
     if (d.iaResumen !== undefined) return iaResumenSemanal();
@@ -2265,10 +2272,28 @@ document.addEventListener('keydown', (e) => {
   e.target.focus();
 });
 
+/** Semana ISO (lunes a domingo), la misma numeración del reporte semanal. */
+function semanaISO(fecha = new Date()) {
+  const d = new Date(Date.UTC(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()));
+  const dia = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dia);  // el jueves de esa semana define el año
+  const anio = d.getUTCFullYear();
+  return { anio, semana: Math.ceil(((d - Date.UTC(anio, 0, 1)) / 86400000 + 1) / 7) };
+}
+/** Fecha de hoy bajo el título; en la vista Hoy, también el número de la semana en curso. */
+function pintarFecha() {
+  const el = $('#fecha-hoy');
+  const hoy = new Date();
+  const texto = hoy.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  if (st.vista !== 'hoy') { el.textContent = texto; return; }
+  const { anio, semana } = semanaISO(hoy);
+  el.innerHTML = `${esc(texto)} <button type="button" class="chip-semana" data-ir-semana="${anio}-${semana}" title="Ver el reporte de la semana ${semana}">Semana ${semana}</button>`;
+}
+
 /* ─────────── arranque ─────────── */
 (async function iniciar() {
   try { JSON.parse(sessionStorage.getItem('mifoco-notificadas') || '[]').forEach((k) => st.notificadas.add(k)); } catch { /* nada */ }
-  $('#fecha-hoy').textContent = new Date().toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  pintarFecha();
   pintarBotonNotif();
   try { st.ia = await api('/api/ia/estado'); } catch { st.ia = { activa: false }; }
   document.body.classList.toggle('ia-activa', !!st.ia.activa);

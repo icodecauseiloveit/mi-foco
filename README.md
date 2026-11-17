@@ -293,6 +293,8 @@ python3 -m venv .venv
 | **Historial** | Dos pestañas. *📅 Reporte semanal*: eliges el número de semana (ISO, p. ej. 46) y el año, o navegas con ‹ ›; muestra de qué día a qué día va (lunes a domingo), los **festivos de Colombia** y, **día por día**, las tareas completadas (a tiempo o con atraso), subtareas completadas, tiempo trabajado por tarea, comentarios y práctica de aprendizaje, con un resumen de la semana (días hábiles, completadas por día hábil). *📜 Bitácora de eventos*: el registro de todo lo que le pasó a cada tarea. |
 | **Alertas** | Vencidas, vencen en < 24 h, rana sin empezar después de las 11 a. m., sesión de más de 90 min (descanso), metas en riesgo o vencidas, metas sin práctica en 7 días. Notificaciones del sistema (actívalas en la barra lateral) y revisión cada minuto. |
 
+**Semana en curso:** en la vista Hoy, junto a la fecha, aparece *Semana N* (numeración ISO, la misma del reporte semanal); al hacer clic abre *Historial › Reporte semanal* de esa semana.
+
 **Modo claro / oscuro:** botón ☀/🌙 en la barra superior; se recuerda en tu navegador y, si nunca lo usas, sigue el modo de Windows.
 
 Atajo: tecla **N** abre "Nueva tarea" (en Metas, "Nueva meta"). Reportes, exportaciones, categorías, notificaciones y respaldo están en el menú **⚙ Herramientas**, abajo en la barra lateral.
